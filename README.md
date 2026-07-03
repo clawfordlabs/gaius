@@ -153,6 +153,8 @@ gaius doctor                     # store, git, index freshness, embedder status
 
 Search notes: query text is sanitized before it reaches FTS5 — each term is quoted as a phrase and terms are joined with `OR` for broad recall — so quotes, boolean operators, parentheses, and `*` in a query are safe.
 
+**IMPORTANT NOTE:** This code is unaudited and largely untested. It should be considered an alpha product. It's not intended for production-grade work.
+
 ---
 
 Copyright © 2026 The Clawford Company. All rights reserved.
