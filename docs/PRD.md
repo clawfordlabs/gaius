@@ -47,7 +47,7 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 ## 4. Architecture
 
 ```
-┌────────────────────────── canonical node (desktop) ───────────────────────┐
+┌────────────── canonical node (Mac mini — the openclaw host) ──────────────┐
 │  ~/memory (git repo, canonical)     .gaius/index.db (SQLite, derived)      │
 │        ▲            ▲                     ▲                                │
 │        │ files      │ files               │ read/write via core lib       │
@@ -143,7 +143,7 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 
 **Phase 1 (this build):** core lib, CLI, index/search, MCP stdio server, stubs, tests. Single machine.
 
-**Phase 2:** bare repo on canonical node; `gaius sync` over tailnet SSH; restic backup recipe (docs only — restic is configured by hand); laptop onboarding docs.
+**Phase 2:** bare repo on the canonical node — the Mac mini already hosting openclaw (macOS 26 arm64; Python 3.14 via mise installed and verified 2026-07-03); `gaius sync` over tailnet SSH; restic backup recipe (docs only — restic is configured by hand); laptop onboarding docs. Gaius must run first-class on macOS: the full test suite and an MCP handshake are part of the deploy check there.
 
 **Phase 3 (mobile/remote):** `gaius-mcp --http` behind auth (bearer token first, OAuth if claude.ai requires it), exposed via Tailscale Funnel. Signed short-lived URLs for downloading artifacts. `run_task` tool that spawns an agent on the canonical node for heavy work. Mobile never syncs files; it is a remote control for the node that has them.
 
