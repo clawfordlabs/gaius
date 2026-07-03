@@ -2,7 +2,21 @@
 
 Gaius is a file-first memory system for AI agents: one canonical store of markdown files (plus binary artifacts) in a git repo, shared by every agent and tool — Claude Code, Codex CLI, Openclaw, GUI apps — through two doors: the `gaius` CLI on machines with a shell, and the `gaius-mcp` MCP server everywhere else. A rebuildable SQLite index (FTS5 + optional vectors) at `<store>/.gaius/index.db` provides hybrid search; it is derived state and can always be deleted and rebuilt.
 
-Full design: [docs/PRD.md](docs/PRD.md).
+Full design: [docs/PRD.md](docs/PRD.md). Landscape: [docs/competitors.md](docs/competitors.md).
+
+## Privacy: self-sovereign by default
+
+By default, **no data ever leaves your machines and no third-party provider is involved** — this is a design principle, not a current limitation, and it is the main differentiator versus hosted memory products:
+
+- The canonical store is markdown files in a local git repo you own.
+- The search index is a local SQLite file, derived from the store and disposable.
+- Search works fully locally: FTS5 keyword search out of the box, plus local embeddings (fastembed) if installed. Nothing is sent anywhere to index or query your notes.
+- Sync (when configured) is git over SSH between your own machines — a bare repo on a box you own, typically over a tailnet. No hosting service holds plaintext.
+- Offsite backup is your responsibility and should be client-side encrypted (e.g. restic), so cloud storage only ever holds ciphertext.
+
+The one way data can leave: explicitly configuring `embedder = "openai"` with a hosted endpoint, which sends the text of every indexed chunk to that provider. Treat that as what it is — opting out of self-sovereignty — or point the same setting at a local server (e.g. Ollama) and keep the guarantee.
+
+Why local-only is good enough: Gaius runs hybrid search (BM25 keyword matching fused with vectors), and on a personal corpus — thousands of documents, not millions, where queries usually share vocabulary with what you wrote — BM25 carries much of the load and mid-tier local embedding models close most of the remaining gap. Hosted embeddings earn their keep on massive or multilingual corpora; a personal memory store is neither. And the index is rebuildable in minutes, so if a stronger local model ships tomorrow, switching is one config line plus `gaius index --rebuild` — never a data migration.
 
 ## Install
 
