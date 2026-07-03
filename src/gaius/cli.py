@@ -10,6 +10,7 @@ from .indexer import index_store, search
 from .store import add_memory, decide as decide_memory, handoff as handoff_memory
 from .store import init_store, list_projects, project_state, read_doc
 from .sync import SyncError, sync as sync_memory
+from .tasks import TaskError, list_tasks, run_task, task_status
 
 
 def parse_tags(value: str | None) -> list[str]:
@@ -146,3 +147,35 @@ def stub(target: str | None) -> None:
 @cli.command()
 def doctor() -> None:
     click.echo(doctor_report(load_config()).rstrip())
+
+
+@cli.command()
+@click.argument("project", required=False)
+@click.argument("prompt", required=False)
+@click.option("--status", "status_id", default=None)
+@click.option("--list", "list_requested", is_flag=True)
+def task(project: str | None, prompt: str | None, status_id: str | None, list_requested: bool) -> None:
+    config = load_config()
+    try:
+        if list_requested:
+            for item in list_tasks(config):
+                click.echo(f"{item['task_id']}\t{item['status']}\t{item['project']}\t{item['started']}")
+            return
+        if status_id:
+            status = task_status(config, status_id)
+            click.echo(f"Task: {status['task_id']}")
+            click.echo(f"Status: {status['status']}")
+            if "exit_code" in status:
+                click.echo(f"Exit code: {status['exit_code']}")
+            click.echo(f"Log: {status['log_path']}")
+            if status["log_tail"]:
+                click.echo("\n".join(status["log_tail"]))
+            return
+        if not project or not prompt:
+            raise click.UsageError("Provide <project> <prompt>, --status <task_id>, or --list")
+        task_id = run_task(config, project, prompt)
+        status = task_status(config, task_id)
+        click.echo(f"Task: {task_id}")
+        click.echo(f"Log: {status['log_path']}")
+    except TaskError as exc:
+        raise click.ClickException(str(exc)) from exc

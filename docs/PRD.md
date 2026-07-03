@@ -37,6 +37,8 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 - One-command sync (`gaius sync`) wrapping pull → commit → push; agents never run raw git.
 - Standing-instruction stubs for CLAUDE.md / AGENTS.md so agents actually use the store.
 
+**Boundary rule (permanent non-goal):** Gaius never talks to a model and never makes a decision. No model loop, no agent runtime, no scheduling, no channels. The one exception is the optional embeddings call, and even that is config, not architecture. Anything that requires intelligence leaves Gaius through `run_task` and runs in a harness the user already operates (openclaw, Claude Code, Codex). This is the line that keeps Gaius a filing cabinet with a search index rather than another agent harness. If a proposed feature needs an LLM to work, it belongs in a harness, not here.
+
 **Non-goals (v1):**
 - Mobile / remote access (phase 3 — see §9).
 - Deck/image/audio extraction beyond PDF text (later).
@@ -136,6 +138,10 @@ Tools (thin wrappers over the same core functions):
 | `log_decision(project, text)` | `gaius decide` |
 | `list_projects()` | `gaius projects` |
 | `read_doc(path)` | `gaius show` |
+| `run_task(project, prompt)` | `gaius task` |
+| `task_status(task_id)` | `gaius task --status` |
+
+**`run_task` — the escape hatch.** The tools above are deliberately constrained (text-shaped questions and answers). `run_task` covers everything else: it hands an arbitrary prompt to a real agent process running on the node that has the files — transcribe the audio artifacts in this project, OCR these scanned PDFs, re-analyze the workout exports. The executor is configuration, not architecture: `task_command` in config.toml names the agent CLI to spawn (`codex exec`, `claude -p`, openclaw, …), run with the project directory as its working directory. Jobs run in the background and return a task id; `task_status` polls progress. Output is written to `projects/<name>/notes/tasks/<task-id>.md` and indexed, so results are immediately searchable. If `task_command` is unconfigured, `run_task` fails loudly with setup instructions. This is arbitrary code execution by design — it stays behind the same access boundary as the rest of Gaius (local machine now, authenticated endpoint in phase 3).
 
 Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` entry, Openclaw config. Same binary everywhere.
 
@@ -145,7 +151,7 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 
 **Phase 2:** bare repo on the canonical node — the Mac mini already hosting openclaw (macOS 26 arm64; Python 3.14 via mise installed and verified 2026-07-03); `gaius sync` over tailnet SSH; restic backup recipe (docs only — restic is configured by hand); laptop onboarding docs. Gaius must run first-class on macOS: the full test suite and an MCP handshake are part of the deploy check there.
 
-**Phase 3 (mobile/remote):** `gaius-mcp --http` behind auth (bearer token first, OAuth if claude.ai requires it), exposed via Tailscale Funnel. Signed short-lived URLs for downloading artifacts. `run_task` tool that spawns an agent on the canonical node for heavy work. Mobile never syncs files; it is a remote control for the node that has them.
+**Phase 3 (mobile/remote):** `gaius-mcp --http` behind auth (bearer token first, OAuth if claude.ai requires it), exposed via Tailscale Funnel. Signed short-lived URLs for downloading artifacts. `run_task` (already in §8) becomes the remote-work primitive: mobile never syncs files; it is a remote control for the node that has them.
 
 ## 10. Security posture
 
