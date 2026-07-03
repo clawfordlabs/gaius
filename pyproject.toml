@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "gaius"
 version = "0.1.0"
 description = "File-first memory system for AI agents"
+authors = [{ name = "The Clawford Company" }]
+license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
