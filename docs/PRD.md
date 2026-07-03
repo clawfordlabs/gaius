@@ -37,6 +37,8 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 - One-command sync (`gaius sync`) wrapping pull → commit → push; agents never run raw git.
 - Standing-instruction stubs for CLAUDE.md / AGENTS.md so agents actually use the store.
 
+**Boundary rule (permanent non-goal):** Gaius never talks to a model and never makes a decision. No model loop, no agent runtime, no scheduling, no channels. The one exception is the optional embeddings call, and even that is config, not architecture. Anything that requires intelligence leaves Gaius through `run_task` and runs in a harness the user already operates (openclaw, Claude Code, Codex). This is the line that keeps Gaius a filing cabinet with a search index rather than another agent harness. If a proposed feature needs an LLM to work, it belongs in a harness, not here.
+
 **Non-goals (v1):**
 - Mobile / remote access (phase 3 — see §9).
 - Deck/image/audio extraction beyond PDF text (later).
