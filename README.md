@@ -76,7 +76,7 @@ Codex (`~/.codex/config.toml`):
 command = "/path/to/gaius/.venv/bin/gaius-mcp"
 ```
 
-Openclaw and anything else that speaks MCP over stdio: point it at the same `gaius-mcp` binary. The server exposes `search_memory`, `add_memory`, `get_project_state`, `handoff`, `log_decision`, `list_projects`, and `read_doc`.
+Openclaw and anything else that speaks MCP over stdio: point it at the same `gaius-mcp` binary. The server exposes `search_memory`, `add_memory`, `get_project_state`, `handoff`, `log_decision`, `list_projects`, `read_doc`, `run_task`, and `task_status`.
 
 ### 5. Give agents standing instructions
 
@@ -98,6 +98,30 @@ gaius sync
 
 On a merge conflict it stops loudly with instructions rather than leaving the repo mid-merge.
 
+### 7. Delegate tasks to an agent
+
+`gaius task <project> "<prompt>"` starts a background agent CLI in `projects/<project>`. Configure the executor in `~/.config/gaius/config.toml`; Gaius appends the prompt as the final argument.
+
+Codex example:
+
+```toml
+task_command = ["codex", "exec", "--sandbox", "workspace-write"]
+```
+
+Claude example:
+
+```toml
+task_command = ["claude", "-p"]
+```
+
+This is the escape hatch for file-heavy work that does not fit the narrow memory tools: transcribe audio artifacts, OCR scanned PDFs, re-analyze workout exports, or inspect project files with a full agent. Logs go to `.gaius/tasks/<task-id>.log`; completed output is written to `projects/<project>/notes/tasks/<task-id>.md` and indexed.
+
+```bash
+gaius task myproject "OCR the scanned PDFs in artifacts/"
+gaius task --status <task-id>
+gaius task --list
+```
+
 ## Everyday use
 
 ```bash
@@ -107,6 +131,7 @@ gaius state myproject            # read the handoff file + recent decisions
 gaius handoff myproject -m "Shipped phase 1; next: deploy to the node."
 gaius decide myproject "Use markdown files as the canonical store."
 gaius projects                   # list projects, most recently touched first
+gaius task myproject "Summarize the PDF artifacts."
 gaius doctor                     # store, git, index freshness, embedder status
 ```
 

@@ -32,4 +32,8 @@ def doctor_report(config: Config) -> str:
         lines.append("Vector index: unavailable")
     status = embedder_status(config)
     lines.append(f"Embedder: {status.name} ({status.detail})")
+    if config.task_command:
+        lines.append(f"Task command: {' '.join(config.task_command)}")
+    else:
+        lines.append("Task command: not configured")
     return "\n".join(lines) + "\n"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from .config import load_config
 from .indexer import search
 from . import store as store_ops
+from . import tasks as task_ops
 from mcp.server.fastmcp import FastMCP
 
 
@@ -46,6 +47,17 @@ def build_server():
     @mcp.tool()
     def read_doc(path: str) -> str:
         return store_ops.read_doc(load_config(), path)
+
+    @mcp.tool()
+    def run_task(project: str, prompt: str) -> dict:
+        config = load_config()
+        task_id = task_ops.run_task(config, project, prompt)
+        status = task_ops.task_status(config, task_id)
+        return {"task_id": task_id, "log_path": status["log_path"]}
+
+    @mcp.tool()
+    def task_status(task_id: str) -> dict:
+        return task_ops.task_status(load_config(), task_id)
 
     return mcp
 

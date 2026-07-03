@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ class Config:
     openai_base_url: str | None = None
     openai_key_env: str | None = None
     openai_model: str | None = None
+    task_command: tuple[str, ...] = ()
 
 
 def config_file() -> Path:
@@ -33,6 +35,8 @@ def load_config(explicit_store: str | Path | None = None) -> Config:
     env_store = os.environ.get("GAIUS_MEMORY_DIR")
     store_value = explicit_store or env_store or raw.get("store_path") or "~/memory"
     embedder = os.environ.get("GAIUS_EMBEDDER") or raw.get("embedder") or "auto"
+    env_task_command = os.environ.get("GAIUS_TASK_COMMAND")
+    task_command = shlex.split(env_task_command) if env_task_command else raw.get("task_command") or []
     vaults = raw.get("vault_paths") or []
     openai = raw.get("openai") or {}
     return Config(
@@ -42,6 +46,7 @@ def load_config(explicit_store: str | Path | None = None) -> Config:
         openai_base_url=openai.get("base_url"),
         openai_key_env=openai.get("key_env"),
         openai_model=openai.get("model"),
+        task_command=tuple(str(part) for part in task_command),
     )
 
 
