@@ -31,7 +31,7 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 
 **Goals (v1):**
 - One memory store usable from Claude Code, Codex CLI, Openclaw, and the GUI apps on desktop.
-- Hybrid search (vector + full-text) over memories, project notes, and Obsidian/Logseq vaults.
+- Hybrid search (vector + full-text) over memories, project notes, and external roots (Obsidian/Logseq vaults, existing project directories — see §5.1, §7).
 - Fixed-location project state (`STATE.md`) and decision log (`DECISIONS.md`) with CLI/MCP helpers to read and update them.
 - Text extraction from PDF artifacts at index time so binaries are searchable.
 - One-command sync (`gaius sync`) wrapping pull → commit → push; agents never run raw git.
@@ -42,7 +42,7 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 **Non-goals (v1):**
 - Mobile / remote access (phase 3 — see §9).
 - Deck/image/audio extraction beyond PDF text (later).
-- Automatic memory capture from transcripts. Writes are explicit, prompted by standing instructions.
+- Automatic memory capture from transcripts — meaning LLM-derived fact extraction. Writes are explicit, prompted by standing instructions. (Raw transcript *indexing* — no model, just text extraction — is planned for v2; see §9.)
 - Multi-user anything.
 - Replacing each tool's native memory. Gaius sits beside it; the stubs point tools at it.
 
@@ -76,7 +76,6 @@ One Python package, three entry points sharing one core library:
       DECISIONS.md         # append-only decision log
       notes/               # freeform durable notes
       artifacts/           # binaries: PDFs, decks, exports, raw data
-  vaults/                  # symlinks to Obsidian/Logseq vaults (read-only, indexed)
   .gaius/                  # gitignored: index.db, locks, config overrides
   .gitignore  .gitattributes
 ```
@@ -96,6 +95,16 @@ Restic to B2 needs B2_ACCOUNT_ID/B2_ACCOUNT_KEY env vars; repo URL format is b2:
 Frontmatter is optional on read (vault files have their own conventions or none); required fields are generated automatically on `gaius add`.
 
 **STATE.md convention** — free-form markdown but always answering: what is this project, current status, what's next, open blockers. `gaius handoff` prepends a timestamped session summary section.
+
+### 5.1 What belongs in the store — and what stays outside
+
+Existing projects fall into three populations, each with a different answer. The decision rule: *does the project need its own remote, CI, collaborators, or public visibility?*
+
+- **Code projects with real repos** (own remotes, histories worth keeping, some public): stay exactly where they are. The memory store holds memory *about* a project — STATE.md, DECISIONS.md, notes, artifacts — never its working tree. Gaius's `projects/<name>/` is a sidecar; the link to the real repo is configuration, not containment: an external root (§7) attributed to the project makes the repo's documents searchable under `--project <name>`, and `run_task` can be pointed at the real working tree.
+- **Document/life projects** (mostly PDFs and markdown, trivial or no git history, no remote): these files *are* memory. They move into `projects/<name>/artifacts/` wholesale, imported at current state. Old directories are kept as archives until confidence is earned; `git subtree add` is available if a small history genuinely matters, but at a handful of commits it usually doesn't.
+- **Upstream clones and reference checkouts**: stay out entirely. Not our projects, not our memory.
+
+**Never submodules.** Agents mishandle them, `gaius sync` would become an N-repo problem, and the content still wouldn't be in the store — all of the complexity, none of the benefit. Importing code histories via subtree is also rejected: it bloats the memory repo and breaks the GitHub story for public projects.
 
 ## 6. CLI spec
 
@@ -119,6 +128,8 @@ Config: `~/.config/gaius/config.toml` (store path, embedder choice, vault paths)
 ## 7. Index & search
 
 - **SQLite** at `<store>/.gaius/index.db`: `docs` table (path, title, mtime, hash, project, tags), `chunks` (doc, offset, text), FTS5 virtual table over chunks, and a vector table via **sqlite-vec**.
+- **External roots:** `[[external]]` entries in config declare read-only directories *outside* the store that are indexed in place — PKM vaults (Obsidian, Logseq), the docs of a real code repo, any folder of files. Each entry has a `path`, an optional `project` (attributing results to a project, so `--project` filters cover both the sidecar and the repo's documents), and optional include/exclude globs. Defaults: extension allowlist (`.md`, `.txt`, `.pdf` — code is deliberately not indexed), `.gitignore` respected when the root is a git repo, per-file size cap. External files are never copied into the store; Gaius never writes into an external root. This generalizes and replaces the earlier `vault_paths` setting (and the `vaults/` symlink directory in the store layout).
+- **Path semantics:** the index is per-host, derived, and never syncs; each host indexes the synced store plus whatever external roots *its own* config declares. Store-internal results are reported store-relative (the store may be mounted at different paths on different machines); external results are absolute paths valid on the answering host. A host only returns paths it indexed itself, so there are no dangling cross-host paths — external content is simply invisible from hosts that don't have it. In phase 3, the node answering a remote query is also the node serving the bytes, so its paths are the right ones.
 - **Chunking:** by markdown heading, max ~400 tokens per chunk, with file path + heading as context prefix.
 - **Embedders (pluggable):** `fastembed` (local ONNX, default if installed) → `openai`-compatible API (config: base URL, key env var, model) → `none`. With `none`, search is FTS5-only and everything still works. This is deliberate: the system must degrade gracefully, never break because a model or API is unavailable.
 - **Hybrid search:** FTS5 (BM25) + vector cosine, merged with reciprocal rank fusion. `--full` prints whole files instead of snippets.
@@ -151,6 +162,8 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 
 **Phase 2:** bare repo on the canonical node — the Mac mini already hosting openclaw (macOS 26 arm64; Python 3.14 via mise installed and verified 2026-07-03); `gaius sync` over tailnet SSH; restic backup recipe (docs only — restic is configured by hand); laptop onboarding docs. Gaius must run first-class on macOS: the full test suite and an MCP handshake are part of the deploy check there.
 
+**v2 — transcript indexing:** `gaius import-transcripts`, run per host, extracts the conversational text (user + assistant messages only — tool output and reasoning are skipped, which is where the bulk lives) from harness session logs into compact markdown digests at `transcripts/<host>/<harness>/<session>.md` in the store, where they sync and become searchable everywhere. Known sources: Claude Code (`~/.claude/projects/<path-slug>/*.jsonl` — project attribution from the directory slug), Codex CLI (`~/.codex/sessions/YYYY/MM/DD/*.jsonl` — attribution from `cwd` in session metadata), openclaw on the canonical node. Opt-in per harness: transcripts are the most sensitive data class the user has, and importing replicates digests to every synced machine. Boundary rule intact — this is raw text extraction, no model involved. **Scope honesty:** this does not enable mid-conversation resume across harnesses (no harness can load another's context); the ceiling is fresh session + `STATE.md` handoff + transcript search for what the handoff missed. Handoff stays the primary pickup mechanism; transcript search is the safety net that makes a lazy or forgotten handoff recoverable.
+
 **Phase 3 (mobile/remote):** `gaius-mcp --http` behind auth (bearer token first, OAuth if claude.ai requires it), exposed via Tailscale Funnel. Signed short-lived URLs for downloading artifacts. `run_task` (already in §8) becomes the remote-work primitive: mobile never syncs files; it is a remote control for the node that has them.
 
 ## 10. Security posture
@@ -172,7 +185,7 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 
 ## 12. Open questions (deferred, not blocking)
 
-- Deck (pptx/keynote) and image extraction pipeline.
+- Deck (pptx/keynote), docx/rtf, and image extraction pipeline (a few docx/rtf files exist in real projects today; pdf+md+txt covers the large majority).
 - Structured health-data ingestion (`query_health`-style tools) — likely a separate importer writing SQLite into `projects/health/artifacts/`.
 - Whether phase-3 auth needs full OAuth for claude.ai remote connectors, or bearer suffices.
 - Memory decay/dedup (merge near-duplicate facts) — revisit once volume warrants.
