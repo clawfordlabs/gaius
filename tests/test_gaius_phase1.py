@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ def test_init_add_search_round_trip_fts_only(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert (store / "global").is_dir()
     assert (store / "projects").is_dir()
+    assert not (store / "vaults").exists()
     assert (store / ".gaius" / "index.db").exists()
 
     result = run_cli(
@@ -319,3 +321,197 @@ def test_pdf_text_is_indexed_and_searchable(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "sample.pdf" in result.output
     assert "orchid text" in result.output
+
+
+def test_config_parses_external_roots_and_legacy_vault_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import load_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("GAIUS_MEMORY_DIR", raising=False)
+    path = tmp_path / "config" / "gaius" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        f'store_path = "{tmp_path / "memory"}"\n'
+        'index_max_file_mb = 7\n'
+        'vault_paths = ["~/legacy-vault"]\n'
+        '[[external]]\n'
+        'path = "~/Documents/Obsidian Vault"\n'
+        'include = ["notes/**"]\n'
+        'exclude = ["notes/private/**"]\n'
+        '[[external]]\n'
+        f'path = "{tmp_path / "khorus"}"\n'
+        'project = "khorus"\n'
+        'exclude = ["node_modules/**"]\n'
+        '[fastembed]\n'
+        'model = "BAAI/bge-small-en-v1.5"\n'
+    )
+
+    config = load_config()
+
+    assert config.store == (tmp_path / "memory").resolve()
+    assert config.index_max_file_mb == 7
+    assert config.fastembed_model == "BAAI/bge-small-en-v1.5"
+    assert len(config.externals) == 3
+    assert config.externals[0].path == (Path.home() / "Documents" / "Obsidian Vault").resolve()
+    assert config.externals[0].project is None
+    assert config.externals[0].include == ("notes/**",)
+    assert config.externals[0].exclude == ("notes/private/**",)
+    assert config.externals[1].project == "khorus"
+    assert config.externals[1].exclude == ("node_modules/**",)
+    assert config.externals[2].path == (Path.home() / "legacy-vault").resolve()
+    assert config.externals[2].project is None
+
+
+def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.doctor import doctor_report
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "external.md").write_text("# External\n\nexternalalpha project doc\n")
+    (external / "plain.txt").write_text("externaltxt plain text doc\n")
+    (external / "script.py").write_text("externalpython should not index\n")
+    (external / "huge.md").write_text("hugeexternal " * 500)
+    internal = store / "global" / "notes" / "internal.txt"
+    config = Config(
+        store=store,
+        embedder="none",
+        externals=(ExternalRoot(path=external.resolve(), project="khorus"),),
+        index_max_file_mb=0.001,
+    )
+    init_store(config, write_user_config=False)
+    internal.parent.mkdir(parents=True)
+    internal.write_text("internaltext store doc\n")
+
+    assert index_store(store, config, rebuild=True) == 3
+
+    external_results = search(store, config, "externalalpha", project="khorus")
+    assert external_results
+    assert external_results[0].path == (external / "external.md").resolve()
+    assert external_results[0].path.is_absolute()
+
+    text_results = search(store, config, "externaltxt", project="khorus")
+    assert text_results
+    assert text_results[0].path == (external / "plain.txt").resolve()
+    assert search(store, config, "externalpython", project="khorus") == []
+    assert search(store, config, "hugeexternal", project="khorus") == []
+
+    internal_results = search(store, config, "internaltext")
+    assert internal_results
+    assert internal_results[0].path == Path("global/notes/internal.txt")
+    assert not internal_results[0].path.is_absolute()
+
+    report = doctor_report(config)
+    assert "External roots:" in report
+    assert f"{external.resolve()} (exists: yes, project: khorus, indexable: 2)" in report
+
+
+def test_external_gitignore_is_respected(tmp_path: Path):
+    if shutil.which("git") is None:
+        pytest.skip("git is unavailable")
+
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "repo"
+    external.mkdir()
+    subprocess.run(["git", "init"], cwd=external, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (external / ".gitignore").write_text("ignored.md\n")
+    (external / "visible.md").write_text("visiblegitignore searchable\n")
+    (external / "ignored.md").write_text("ignoredgitignore searchable\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve()),))
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    assert search(store, config, "visiblegitignore")
+    assert search(store, config, "ignoredgitignore") == []
+
+
+def test_external_same_named_files_do_not_collide(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import connect, ensure_schema, index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    one = tmp_path / "one"
+    two = tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    (one / "same.md").write_text("samecollision first root\n")
+    (two / "same.md").write_text("samecollision second root\n")
+    config = Config(
+        store=store,
+        embedder="none",
+        externals=(ExternalRoot(path=one.resolve()), ExternalRoot(path=two.resolve())),
+    )
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    results = search(store, config, "samecollision", limit=10)
+    paths = {result.path for result in results}
+    assert (one / "same.md").resolve() in paths
+    assert (two / "same.md").resolve() in paths
+
+    conn = connect(store)
+    ensure_schema(conn)
+    rows = conn.execute("SELECT path FROM docs WHERE path LIKE ?", (f"{tmp_path}%",)).fetchall()
+    conn.close()
+    assert {row["path"] for row in rows} == {str((one / "same.md").resolve()), str((two / "same.md").resolve())}
+
+
+def test_external_include_and_exclude_globs(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "external"
+    (external / "keep").mkdir(parents=True)
+    (external / "other").mkdir()
+    (external / "keep" / "included.md").write_text("includedglob searchable\n")
+    (external / "keep" / "drop.md").write_text("excludedglob searchable\n")
+    (external / "other" / "outside.md").write_text("outsideglob searchable\n")
+    config = Config(
+        store=store,
+        embedder="none",
+        externals=(ExternalRoot(path=external.resolve(), include=("keep/**",), exclude=("keep/drop.md",)),),
+    )
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    assert search(store, config, "includedglob")
+    assert search(store, config, "excludedglob") == []
+    assert search(store, config, "outsideglob") == []
+
+
+def test_fastembed_model_config_reaches_constructor(monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config
+    from gaius.embeddings import get_embedder
+
+    captured = {}
+
+    class FakeFastEmbedEmbedder:
+        name = "fastembed"
+
+        def __init__(self, model_name=None):
+            captured["model_name"] = model_name
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.1, 0.2] for _ in texts]
+
+    monkeypatch.setattr("gaius.embeddings.FastEmbedEmbedder", FakeFastEmbedEmbedder)
+
+    config = Config(store=Path("/tmp/memory"), embedder="fastembed", fastembed_model="BAAI/bge-small-en-v1.5")
+    embedder = get_embedder(config)
+
+    assert embedder.name == "fastembed"
+    assert captured["model_name"] == "BAAI/bge-small-en-v1.5"
+    assert embedder.embed(["hello"]) == [[0.1, 0.2]]

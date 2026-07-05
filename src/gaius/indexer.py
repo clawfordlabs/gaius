@@ -4,10 +4,12 @@ import json
 import math
 import re
 import sqlite3
+import subprocess
+from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Config
+from .config import Config, ExternalRoot
 from .embeddings import get_embedder
 from .utils import file_hash
 
@@ -31,6 +33,18 @@ class SearchResult:
     heading: str
     snippet: str
     score: float
+
+
+@dataclass(frozen=True)
+class IndexableFile:
+    path: Path
+    index_path: Path
+    project: str | None = None
+    external: bool = False
+
+
+INTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
+EXTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
 
 
 def index_path(store: Path) -> Path:
@@ -218,16 +232,100 @@ def sanitize_fts_query(query: str) -> str:
     return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
 
 
-def iter_indexable_files(store: Path, config: Config) -> list[Path]:
-    files: list[Path] = []
-    roots = [store / "global", store / "projects", store / "vaults", *config.vault_paths]
+def _matches_globs(relative: Path, patterns: tuple[str, ...]) -> bool:
+    rel = relative.as_posix()
+    return any(fnmatchcase(rel, pattern) for pattern in patterns)
+
+
+def _external_root_contains(root: ExternalRoot, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.path.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def external_project_for_path(config: Config, path: Path) -> str | None:
+    containing = [root for root in config.externals if _external_root_contains(root, path)]
+    if not containing:
+        return None
+    root = max(containing, key=lambda item: len(item.path.resolve().parts))
+    return root.project
+
+
+def _root_relative_path(root: ExternalRoot, path: Path) -> Path | None:
+    try:
+        return path.resolve().relative_to(root.path.resolve())
+    except ValueError:
+        return None
+
+
+def _external_file_allowed(root: ExternalRoot, path: Path, max_bytes: int) -> bool:
+    relative = _root_relative_path(root, path)
+    if relative is None:
+        return False
+    if ".git" in relative.parts:
+        return False
+    if path.suffix.lower() not in EXTERNAL_EXTENSIONS:
+        return False
+    if root.include and not _matches_globs(relative, root.include):
+        return False
+    if root.exclude and _matches_globs(relative, root.exclude):
+        return False
+    try:
+        if path.stat().st_size > max_bytes:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _git_ls_files(root: Path) -> list[Path] | None:
+    if not (root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return [root / raw.decode() for raw in result.stdout.split(b"\0") if raw]
+
+
+def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+    if not root.path.exists() or not root.path.is_dir():
+        return []
+    max_bytes = int(max_file_mb * 1024 * 1024)
+    git_files = _git_ls_files(root.path)
+    candidates = git_files if git_files is not None else list(root.path.rglob("*"))
+    files = [
+        path
+        for path in candidates
+        if path.is_file() and _external_file_allowed(root, path, max_bytes)
+    ]
+    return sorted(set(files), key=lambda path: str(path.resolve()))
+
+
+def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
+    files: list[IndexableFile] = []
+    roots = [store / "global", store / "projects"]
     for root in roots:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".md", ".markdown", ".pdf"}:
-                files.append(path)
-    return sorted(set(files))
+            if path.is_file() and path.suffix.lower() in INTERNAL_EXTENSIONS:
+                identity = relative_to_store(store, path)
+                files.append(IndexableFile(path=path, index_path=identity, project=infer_project(identity)))
+    for root in config.externals:
+        for path in iter_external_files(root, config.index_max_file_mb):
+            files.append(IndexableFile(path=path, index_path=path.resolve(), project=root.project, external=True))
+    unique = {str(file.index_path): file for file in files}
+    return sorted(unique.values(), key=lambda file: str(file.index_path))
 
 
 def read_indexable_text(path: Path) -> str:
@@ -243,10 +341,19 @@ def relative_to_store(store: Path, path: Path) -> Path:
     try:
         return path.resolve().relative_to(store.resolve())
     except ValueError:
-        return Path("vaults") / path.name
+        return path.resolve()
 
 
-def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = False) -> int:
+def _as_indexable_file(store: Path, config: Config, file: Path | IndexableFile) -> IndexableFile:
+    if isinstance(file, IndexableFile):
+        return file
+    identity = relative_to_store(store, file)
+    if identity.is_absolute():
+        return IndexableFile(path=file, index_path=identity, project=external_project_for_path(config, file), external=True)
+    return IndexableFile(path=file, index_path=identity, project=infer_project(identity))
+
+
+def index_files(store: Path, config: Config, files: list[Path | IndexableFile], rebuild: bool = False) -> int:
     conn = connect(store)
     ensure_schema(conn)
     if rebuild:
@@ -259,10 +366,12 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
 
     embedder = get_embedder(config)
     indexed = 0
-    for path in files:
+    for file in files:
+        candidate = _as_indexable_file(store, config, file)
+        path = candidate.path
         if not path.exists() or not path.is_file():
             continue
-        rel = relative_to_store(store, path)
+        rel = candidate.index_path
         digest = file_hash(path)
         mtime = path.stat().st_mtime
         existing = conn.execute("SELECT id, mtime, hash FROM docs WHERE path = ?", (str(rel),)).fetchone()
@@ -296,7 +405,7 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
                         title,
                         mtime,
                         digest,
-                        infer_project(rel),
+                        candidate.project,
                         json.dumps(parse_tags(text)),
                         "pdf" if path.suffix.lower() == ".pdf" else "markdown",
                         text if path.suffix.lower() == ".pdf" else None,
@@ -314,7 +423,7 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
                         title,
                         mtime,
                         digest,
-                        infer_project(rel),
+                        candidate.project,
                         json.dumps(parse_tags(text)),
                         "pdf" if path.suffix.lower() == ".pdf" else "markdown",
                         text if path.suffix.lower() == ".pdf" else None,
@@ -451,10 +560,10 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
     indexed_rows = conn.execute("SELECT path, mtime, hash FROM docs").fetchall()
     indexed = {row["path"]: row for row in indexed_rows}
     fresh = 0
-    for path in files:
-        rel = str(relative_to_store(store, path))
+    for file in files:
+        rel = str(file.index_path)
         row = indexed.get(rel)
-        if row and row["hash"] == file_hash(path):
+        if row and row["hash"] == file_hash(file.path):
             fresh += 1
     conn.close()
     return len(files), fresh
