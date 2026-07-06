@@ -128,12 +128,39 @@ def ensure_vec_table(conn: sqlite3.Connection, dimensions: int) -> bool:
     exists = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'").fetchone()
     if exists and current and int(current["value"]) == dimensions:
         return True
+    dimensions_changed = current is not None and int(current["value"]) != dimensions
     conn.execute("DROP TABLE IF EXISTS vec_chunks")
+    if dimensions_changed:
+        conn.execute("UPDATE chunks SET vector = NULL")
     conn.execute(f"CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id integer primary key, embedding float[{dimensions}])")
     conn.execute(
         "INSERT OR REPLACE INTO vector_meta(key, value) VALUES ('dimensions', ?)",
         (str(dimensions),),
     )
+    conn.commit()
+    return True
+
+
+def vector_config_key(config: Config) -> str:
+    if config.embedder == "fastembed":
+        return f"fastembed:{config.fastembed_model or ''}"
+    if config.embedder == "openai":
+        return f"openai:{config.openai_base_url or ''}:{config.openai_model or ''}"
+    if config.embedder == "auto":
+        return f"auto:{config.fastembed_model or ''}"
+    return config.embedder
+
+
+def ensure_vector_config(conn: sqlite3.Connection, config: Config) -> bool:
+    key = vector_config_key(config)
+    current = conn.execute("SELECT value FROM vector_meta WHERE key = 'embedder'").fetchone()
+    if current and current["value"] == key:
+        return False
+    load_vec_extension(conn)
+    conn.execute("DROP TABLE IF EXISTS vec_chunks")
+    conn.execute("DELETE FROM vector_meta")
+    conn.execute("UPDATE chunks SET vector = NULL")
+    conn.execute("INSERT INTO vector_meta(key, value) VALUES ('embedder', ?)", (key,))
     conn.commit()
     return True
 
@@ -291,9 +318,9 @@ def _git_ls_files(root: Path) -> list[Path] | None:
             stderr=subprocess.PIPE,
         )
     except OSError:
-        return None
+        return []
     if result.returncode != 0:
-        return None
+        return []
     return [root / raw.decode() for raw in result.stdout.split(b"\0") if raw]
 
 
@@ -313,6 +340,7 @@ def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[P
 
 def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
     files: list[IndexableFile] = []
+    store_root = store.resolve()
     roots = [store / "global", store / "projects"]
     for root in roots:
         if not root.exists():
@@ -323,7 +351,13 @@ def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
                 files.append(IndexableFile(path=path, index_path=identity, project=infer_project(identity)))
     for root in config.externals:
         for path in iter_external_files(root, config.index_max_file_mb):
-            files.append(IndexableFile(path=path, index_path=path.resolve(), project=root.project, external=True))
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(store_root)
+                continue
+            except ValueError:
+                pass
+            files.append(IndexableFile(path=path, index_path=resolved, project=external_project_for_path(config, path), external=True))
     unique = {str(file.index_path): file for file in files}
     return sorted(unique.values(), key=lambda file: str(file.index_path))
 
@@ -353,10 +387,17 @@ def _as_indexable_file(store: Path, config: Config, file: Path | IndexableFile) 
     return IndexableFile(path=file, index_path=identity, project=infer_project(identity))
 
 
-def index_files(store: Path, config: Config, files: list[Path | IndexableFile], rebuild: bool = False) -> int:
+def index_files(
+    store: Path,
+    config: Config,
+    files: list[Path | IndexableFile],
+    rebuild: bool = False,
+    cleanup_stale: bool = False,
+) -> int:
     conn = connect(store)
     ensure_schema(conn)
     if rebuild:
+        load_vec_extension(conn)
         conn.execute("DROP TABLE IF EXISTS vec_chunks")
         conn.execute("DELETE FROM vector_meta")
         conn.execute("DELETE FROM chunks_fts")
@@ -365,7 +406,40 @@ def index_files(store: Path, config: Config, files: list[Path | IndexableFile], 
         conn.commit()
 
     embedder = get_embedder(config)
+    vector_config_changed = ensure_vector_config(conn, config) if embedder.name != "none" else False
     indexed = 0
+    live_paths = {str(_as_indexable_file(store, config, file).index_path) for file in files}
+    if cleanup_stale and live_paths:
+        existing_paths = [row["path"] for row in conn.execute("SELECT path FROM docs").fetchall()]
+        stale_paths = [
+            path
+            for path in existing_paths
+            if (
+                path.startswith("vaults/")
+                or (Path(path).is_absolute() and path not in live_paths)
+            )
+        ]
+        if stale_paths:
+            with conn:
+                for stale_path in stale_paths:
+                    chunk_ids = [
+                        int(row["id"])
+                        for row in conn.execute(
+                            """
+                            SELECT chunks.id
+                            FROM chunks
+                            JOIN docs ON docs.id = chunks.doc_id
+                            WHERE docs.path = ?
+                            """,
+                            (stale_path,),
+                        ).fetchall()
+                    ]
+                    if chunk_ids:
+                        placeholders = ",".join("?" for _ in chunk_ids)
+                        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+                        if vec_table_active(conn):
+                            conn.execute(f"DELETE FROM vec_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+                    conn.execute("DELETE FROM docs WHERE path = ?", (stale_path,))
     for file in files:
         candidate = _as_indexable_file(store, config, file)
         path = candidate.path
@@ -375,7 +449,7 @@ def index_files(store: Path, config: Config, files: list[Path | IndexableFile], 
         digest = file_hash(path)
         mtime = path.stat().st_mtime
         existing = conn.execute("SELECT id, mtime, hash FROM docs WHERE path = ?", (str(rel),)).fetchone()
-        if existing and existing["hash"] == digest and abs(existing["mtime"] - mtime) < 0.0001:
+        if existing and existing["hash"] == digest and abs(existing["mtime"] - mtime) < 0.0001 and not vector_config_changed:
             continue
 
         text = read_indexable_text(path)
@@ -453,7 +527,7 @@ def index_files(store: Path, config: Config, files: list[Path | IndexableFile], 
 
 
 def index_store(store: Path, config: Config, rebuild: bool = False) -> int:
-    return index_files(store, config, iter_indexable_files(store, config), rebuild=rebuild)
+    return index_files(store, config, iter_indexable_files(store, config), rebuild=rebuild, cleanup_stale=True)
 
 
 def vector_score(query_vector: list[float], vector_json: str | None) -> float:
@@ -504,6 +578,7 @@ def search(store: Path, config: Config, query: str, project: str | None = None, 
     embedder = get_embedder(config)
     if embedder.name != "none":
         qvec = embedder.embed([query])[0]
+        ensure_vec_table(conn, len(qvec))
         scored = []
         if vec_table_active(conn):
             vec_params: list[object] = [sqlite_vec.serialize_float32(qvec), max(limit * 4, limit)]

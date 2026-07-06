@@ -492,6 +492,174 @@ def test_external_include_and_exclude_globs(tmp_path: Path):
     assert search(store, config, "outsideglob") == []
 
 
+def test_external_globs_match_nested_paths(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "external"
+    (external / "keep" / "deep").mkdir(parents=True)
+    (external / "keep" / "deep" / "included.md").write_text("nestedincluded searchable\n")
+    (external / "keep" / "deep" / "secret.md").write_text("nestedsecret searchable\n")
+    config = Config(
+        store=store,
+        embedder="none",
+        externals=(ExternalRoot(path=external.resolve(), include=("keep/**",), exclude=("keep/**/secret.md",)),),
+    )
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    assert search(store, config, "nestedincluded")
+    assert search(store, config, "nestedsecret") == []
+
+
+def test_external_root_inside_store_is_not_double_indexed(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import connect, ensure_schema, index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    doc = store / "global" / "notes" / "overlap.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("overlapinternal searchable\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=(store / "global").resolve(), project="wrong"),))
+
+    index_store(store, config, rebuild=True)
+
+    results = search(store, config, "overlapinternal", limit=10)
+    assert [result.path for result in results] == [Path("global/notes/overlap.md")]
+    conn = connect(store)
+    ensure_schema(conn)
+    rows = conn.execute("SELECT path, project FROM docs WHERE path LIKE '%overlap.md'").fetchall()
+    conn.close()
+    assert [(row["path"], row["project"]) for row in rows] == [("global/notes/overlap.md", None)]
+
+
+def test_nested_external_roots_use_deepest_project(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "doc.md").write_text("nestedproject searchable\n")
+    config = Config(
+        store=store,
+        embedder="none",
+        externals=(
+            ExternalRoot(path=root.resolve()),
+            ExternalRoot(path=nested.resolve(), project="deep"),
+        ),
+    )
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    assert search(store, config, "nestedproject", project="deep")
+    assert search(store, config, "nestedproject", project="wrong") == []
+
+
+def test_external_git_failure_does_not_fallback_to_ignored_rglob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "repo"
+    (external / ".git").mkdir(parents=True)
+    (external / ".gitignore").write_text("ignored.md\n")
+    (external / "ignored.md").write_text("ignoredaftergitfailure searchable\n")
+
+    def failed_git(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"fatal")
+
+    monkeypatch.setattr("gaius.indexer.subprocess.run", failed_git)
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve()),))
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+
+    assert search(store, config, "ignoredaftergitfailure") == []
+
+
+def test_incremental_index_removes_legacy_vault_rows(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import connect, ensure_schema, index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "vault"
+    external.mkdir()
+    doc = external / "note.md"
+    doc.write_text("legacyvault searchable\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve()),))
+    init_store(config, write_user_config=False)
+    conn = connect(store)
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO docs(path, title, mtime, hash, project, tags, kind, cached_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("vaults/note.md", "note", 0, "old", None, "[]", "markdown", None),
+    )
+    conn.commit()
+    conn.close()
+
+    index_store(store, config, rebuild=False)
+
+    results = search(store, config, "legacyvault", limit=10)
+    assert {result.path for result in results} == {doc.resolve()}
+    conn = connect(store)
+    ensure_schema(conn)
+    paths = {row["path"] for row in conn.execute("SELECT path FROM docs").fetchall()}
+    conn.close()
+    assert "vaults/note.md" not in paths
+    assert str(doc.resolve()) in paths
+
+
+def test_vector_config_change_reembeds_unchanged_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config
+    from gaius.indexer import connect, ensure_schema, index_store, search
+    from gaius.store import init_store
+
+    class FakeEmbedder:
+        name = "fake"
+
+        def __init__(self, vectors: list[list[float]]):
+            self.vectors = vectors
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return self.vectors[: len(texts)]
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    doc = store / "global" / "vectors.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("vectordoc searchable\n")
+    config_one = Config(store=store, embedder="fake-one")
+    config_two = Config(store=store, embedder="fake-two")
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder([[1.0, 0.0]]))
+
+    index_store(store, config_one, rebuild=True)
+    conn = connect(store)
+    ensure_schema(conn)
+    first_vector = conn.execute("SELECT vector FROM chunks WHERE vector IS NOT NULL").fetchone()["vector"]
+    conn.close()
+
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder([[0.0, 1.0]]))
+    assert search(store, config_two, "vectordoc")
+
+    conn = connect(store)
+    ensure_schema(conn)
+    second_vector = conn.execute("SELECT vector FROM chunks WHERE vector IS NOT NULL").fetchone()["vector"]
+    conn.close()
+    assert first_vector != second_vector
+    assert json.loads(second_vector) == [0.0, 1.0]
+
+
 def test_fastembed_model_config_reaches_constructor(monkeypatch: pytest.MonkeyPatch):
     from gaius.config import Config
     from gaius.embeddings import get_embedder
