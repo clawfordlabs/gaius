@@ -8,10 +8,20 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class ExternalRoot:
+    path: Path
+    project: str | None = None
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     store: Path
     embedder: str = "auto"
-    vault_paths: tuple[Path, ...] = ()
+    externals: tuple[ExternalRoot, ...] = ()
+    index_max_file_mb: float = 10.0
+    fastembed_model: str | None = None
     openai_base_url: str | None = None
     openai_key_env: str | None = None
     openai_model: str | None = None
@@ -37,12 +47,28 @@ def load_config(explicit_store: str | Path | None = None) -> Config:
     embedder = os.environ.get("GAIUS_EMBEDDER") or raw.get("embedder") or "auto"
     env_task_command = os.environ.get("GAIUS_TASK_COMMAND")
     task_command = shlex.split(env_task_command) if env_task_command else raw.get("task_command") or []
-    vaults = raw.get("vault_paths") or []
+    externals = [
+        ExternalRoot(
+            path=Path(item["path"]).expanduser().resolve(),
+            project=item.get("project"),
+            include=tuple(str(pattern) for pattern in item.get("include", ())),
+            exclude=tuple(str(pattern) for pattern in item.get("exclude", ())),
+        )
+        for item in raw.get("external", ())
+        if item.get("path")
+    ]
+    externals.extend(
+        ExternalRoot(path=Path(vault).expanduser().resolve())
+        for vault in raw.get("vault_paths", ())
+    )
+    fastembed = raw.get("fastembed") or {}
     openai = raw.get("openai") or {}
     return Config(
         store=Path(store_value).expanduser().resolve(),
         embedder=embedder,
-        vault_paths=tuple(Path(v).expanduser().resolve() for v in vaults),
+        externals=tuple(externals),
+        index_max_file_mb=float(raw.get("index_max_file_mb", 10)),
+        fastembed_model=fastembed.get("model"),
         openai_base_url=openai.get("base_url"),
         openai_key_env=openai.get("key_env"),
         openai_model=openai.get("model"),

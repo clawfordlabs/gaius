@@ -39,19 +39,25 @@ Optional extras: `pip install -e ".[fastembed]"` for local embeddings, `".[dev]"
 gaius init ~/memory
 ```
 
-This creates the store layout (`global/`, `projects/`, `vaults/`), a git repo, and writes `~/.config/gaius/config.toml` pointing at it.
+This creates the store layout (`global/`, `projects/`), a git repo, and writes `~/.config/gaius/config.toml` pointing at it.
 
-### 2. Wire in existing vaults (optional)
+### 2. Wire in existing files (optional)
 
-Point the indexer at existing PKM vaults (Obsidian, Logseq) by listing them in `~/.config/gaius/config.toml`. They are indexed read-only; Gaius never writes into them.
+Point the indexer at existing files by adding `[[external]]` roots in `~/.config/gaius/config.toml`. They are indexed in place, never copied into the store, and Gaius never writes into an external root.
 
 ```toml
 store_path = "/home/lane/memory"
-vault_paths = [
-  "~/Documents/Obsidian Vault",
-  "~/vaults/logseq-lane",       # e.g. a clone of a Logseq graph repo
-]
+
+[[external]]
+path = "~/Documents/Obsidian Vault"
+
+[[external]]
+path = "~/work/client-portal"
+project = "client-portal"
+exclude = ["node_modules/**"]
 ```
+
+Defaults: external indexing includes `.md`, `.markdown`, `.txt`, and `.pdf`; respects `.gitignore` when the external root is a git repo; skips files over 10 MB; and supports optional `include`/`exclude` globs per root. Search indexes are per-host: store results print store-relative paths, while external results print absolute paths valid on that host. The old `vault_paths = [...]` config key is still read for backward compatibility and treated as external roots without project attribution.
 
 Then build the index and check status:
 
@@ -65,7 +71,12 @@ gaius doctor
 Search works out of the box in FTS5-only mode. For semantic search, either install fastembed (local, no API key) or configure an OpenAI-compatible endpoint:
 
 ```toml
-embedder = "openai"          # or "fastembed", "auto" (fastembed if present), "none"
+embedder = "fastembed"       # or "auto" (fastembed if present), "openai", "none"
+
+[fastembed]
+model = "BAAI/bge-small-en-v1.5"  # optional; default fastembed model is unchanged when omitted
+
+# Or use a hosted/local OpenAI-compatible endpoint with: embedder = "openai"
 
 [openai]
 base_url = "https://api.openai.com/v1"

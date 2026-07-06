@@ -26,11 +26,10 @@ class BaseEmbedder:
 class FastEmbedEmbedder(BaseEmbedder):
     name = "fastembed"
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str | None = None) -> None:
         from fastembed import TextEmbedding
 
-        self.model = TextEmbedding()
-        self.dimensions = 384
+        self.model = TextEmbedding(model_name=model_name) if model_name else TextEmbedding()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [list(v) for v in self.model.embed(texts)]
@@ -77,7 +76,7 @@ def get_embedder(config: Config) -> BaseEmbedder:
         return OpenAIEmbedder(config)
     if choice in {"auto", "fastembed"}:
         try:
-            return FastEmbedEmbedder()
+            return FastEmbedEmbedder(config.fastembed_model)
         except Exception:
             if choice == "fastembed":
                 raise

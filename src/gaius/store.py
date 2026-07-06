@@ -10,7 +10,7 @@ from .utils import now_iso, short_hash, slugify, title_for_project, today
 
 def init_store(config: Config, write_user_config: bool = True) -> Path:
     store = config.store
-    for subdir in ["global", "projects", "vaults", ".gaius"]:
+    for subdir in ["global", "projects", ".gaius"]:
         (store / subdir).mkdir(parents=True, exist_ok=True)
     (store / ".gitignore").write_text(".gaius/\n")
     (store / ".gitattributes").write_text("*.md text eol=lf\n")

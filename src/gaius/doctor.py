@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .config import Config
 from .embeddings import embedder_status
-from .indexer import index_freshness, vector_storage_status
+from .indexer import index_freshness, iter_effective_external_files, vector_storage_status
 from .sync import git, remote_exists
 
 
@@ -30,6 +30,13 @@ def doctor_report(config: Config) -> str:
         lines.append("Git: unavailable")
         lines.append("Index: unavailable")
         lines.append("Vector index: unavailable")
+    if config.externals:
+        lines.append("External roots:")
+        for root in config.externals:
+            count = len(iter_effective_external_files(store, root, config.index_max_file_mb))
+            project = root.project or "none"
+            exists = "yes" if root.path.exists() else "no"
+            lines.append(f"  {root.path} (exists: {exists}, project: {project}, indexable: {count})")
     status = embedder_status(config)
     lines.append(f"Embedder: {status.name} ({status.detail})")
     if config.task_command:

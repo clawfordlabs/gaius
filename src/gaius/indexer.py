@@ -4,10 +4,12 @@ import json
 import math
 import re
 import sqlite3
+import subprocess
+from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Config
+from .config import Config, ExternalRoot
 from .embeddings import get_embedder
 from .utils import file_hash
 
@@ -31,6 +33,24 @@ class SearchResult:
     heading: str
     snippet: str
     score: float
+
+
+@dataclass(frozen=True)
+class IndexableFile:
+    path: Path
+    index_path: Path
+    project: str | None = None
+    external: bool = False
+
+
+@dataclass(frozen=True)
+class ExternalFileScan:
+    files: list[Path]
+    complete: bool = True
+
+
+INTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
+EXTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
 
 
 def index_path(store: Path) -> Path:
@@ -114,7 +134,10 @@ def ensure_vec_table(conn: sqlite3.Connection, dimensions: int) -> bool:
     exists = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'").fetchone()
     if exists and current and int(current["value"]) == dimensions:
         return True
+    dimensions_changed = current is not None and int(current["value"]) != dimensions
     conn.execute("DROP TABLE IF EXISTS vec_chunks")
+    if dimensions_changed:
+        conn.execute("UPDATE chunks SET vector = NULL")
     conn.execute(f"CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id integer primary key, embedding float[{dimensions}])")
     conn.execute(
         "INSERT OR REPLACE INTO vector_meta(key, value) VALUES ('dimensions', ?)",
@@ -122,6 +145,50 @@ def ensure_vec_table(conn: sqlite3.Connection, dimensions: int) -> bool:
     )
     conn.commit()
     return True
+
+
+def vector_config_key(config: Config) -> str:
+    if config.embedder == "fastembed":
+        return f"fastembed:{config.fastembed_model or ''}"
+    if config.embedder == "openai":
+        return f"openai:{config.openai_base_url or ''}:{config.openai_model or ''}"
+    if config.embedder == "auto":
+        return f"auto:{config.fastembed_model or ''}"
+    return config.embedder
+
+
+def ensure_vector_config(conn: sqlite3.Connection, config: Config) -> bool:
+    key = vector_config_key(config)
+    current = conn.execute("SELECT value FROM vector_meta WHERE key = 'embedder'").fetchone()
+    if current and current["value"] == key:
+        return False
+    load_vec_extension(conn)
+    conn.execute("DROP TABLE IF EXISTS vec_chunks")
+    conn.execute("DELETE FROM vector_meta")
+    conn.execute("UPDATE chunks SET vector = NULL")
+    conn.execute("INSERT INTO vector_meta(key, value) VALUES ('embedder', ?)", (key,))
+    conn.commit()
+    return True
+
+
+def vector_config_current(conn: sqlite3.Connection) -> str | None:
+    current = conn.execute("SELECT value FROM vector_meta WHERE key = 'embedder'").fetchone()
+    return str(current["value"]) if current else None
+
+
+def vector_freshness_required(config: Config) -> bool:
+    try:
+        return get_embedder(config).name != "none"
+    except Exception:
+        return False
+
+
+def doc_vectors_complete(conn: sqlite3.Connection, doc_id: int) -> bool:
+    missing = conn.execute(
+        "SELECT COUNT(*) AS count FROM chunks WHERE doc_id = ? AND vector IS NULL",
+        (doc_id,),
+    ).fetchone()
+    return int(missing["count"]) == 0
 
 
 def vec_table_active(conn: sqlite3.Connection) -> bool:
@@ -218,16 +285,130 @@ def sanitize_fts_query(query: str) -> str:
     return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
 
 
-def iter_indexable_files(store: Path, config: Config) -> list[Path]:
-    files: list[Path] = []
-    roots = [store / "global", store / "projects", store / "vaults", *config.vault_paths]
+def _matches_globs(relative: Path, patterns: tuple[str, ...]) -> bool:
+    rel = relative.as_posix()
+    return any(fnmatchcase(rel, pattern) for pattern in patterns)
+
+
+def _external_root_contains(root: ExternalRoot, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.path.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def external_project_for_path(config: Config, path: Path) -> str | None:
+    containing = [root for root in config.externals if _external_root_contains(root, path)]
+    if not containing:
+        return None
+    root = max(containing, key=lambda item: len(item.path.resolve().parts))
+    return root.project
+
+
+def _root_relative_path(root: ExternalRoot, path: Path) -> Path | None:
+    try:
+        return path.resolve().relative_to(root.path.resolve())
+    except ValueError:
+        return None
+
+
+def _external_file_allowed(root: ExternalRoot, path: Path, max_bytes: int) -> bool:
+    relative = _root_relative_path(root, path)
+    if relative is None:
+        return False
+    if ".git" in relative.parts:
+        return False
+    if path.suffix.lower() not in EXTERNAL_EXTENSIONS:
+        return False
+    if root.include and not _matches_globs(relative, root.include):
+        return False
+    if root.exclude and _matches_globs(relative, root.exclude):
+        return False
+    try:
+        if path.stat().st_size > max_bytes:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _git_ls_files(root: Path) -> tuple[list[Path], bool] | None:
+    if not (root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError:
+        return [], False
+    if result.returncode != 0:
+        return [], False
+    return [root / raw.decode() for raw in result.stdout.split(b"\0") if raw], True
+
+
+def scan_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> ExternalFileScan:
+    if not root.path.exists() or not root.path.is_dir():
+        return ExternalFileScan([], complete=False)
+    max_bytes = int(max_file_mb * 1024 * 1024)
+    git_scan = _git_ls_files(root.path)
+    if git_scan is None:
+        candidates = list(root.path.rglob("*"))
+        complete = True
+    else:
+        candidates, complete = git_scan
+    files = [
+        path
+        for path in candidates
+        if path.is_file() and _external_file_allowed(root, path, max_bytes)
+    ]
+    return ExternalFileScan(sorted(set(files), key=lambda path: str(path.resolve())), complete=complete)
+
+
+def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+    return scan_external_files(root, max_file_mb).files
+
+
+def is_inside_store(store: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(store.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def iter_effective_external_files(store: Path, root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+    return [path for path in iter_external_files(root, max_file_mb) if not is_inside_store(store, path)]
+
+
+def iter_indexable_files_with_failures(store: Path, config: Config) -> tuple[list[IndexableFile], tuple[Path, ...]]:
+    files: list[IndexableFile] = []
+    incomplete_external_roots: list[Path] = []
+    roots = [store / "global", store / "projects"]
     for root in roots:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".md", ".markdown", ".pdf"}:
-                files.append(path)
-    return sorted(set(files))
+            if path.is_file() and path.suffix.lower() in INTERNAL_EXTENSIONS:
+                identity = relative_to_store(store, path)
+                files.append(IndexableFile(path=path, index_path=identity, project=infer_project(identity)))
+    for root in config.externals:
+        scan = scan_external_files(root, config.index_max_file_mb)
+        if not scan.complete:
+            incomplete_external_roots.append(root.path.resolve())
+        for path in [path for path in scan.files if not is_inside_store(store, path)]:
+            resolved = path.resolve()
+            files.append(IndexableFile(path=path, index_path=resolved, project=external_project_for_path(config, path), external=True))
+    unique = {str(file.index_path): file for file in files}
+    return sorted(unique.values(), key=lambda file: str(file.index_path)), tuple(incomplete_external_roots)
+
+
+def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
+    files, _ = iter_indexable_files_with_failures(store, config)
+    return files
 
 
 def read_indexable_text(path: Path) -> str:
@@ -243,13 +424,30 @@ def relative_to_store(store: Path, path: Path) -> Path:
     try:
         return path.resolve().relative_to(store.resolve())
     except ValueError:
-        return Path("vaults") / path.name
+        return path.resolve()
 
 
-def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = False) -> int:
+def _as_indexable_file(store: Path, config: Config, file: Path | IndexableFile) -> IndexableFile:
+    if isinstance(file, IndexableFile):
+        return file
+    identity = relative_to_store(store, file)
+    if identity.is_absolute():
+        return IndexableFile(path=file, index_path=identity, project=external_project_for_path(config, file), external=True)
+    return IndexableFile(path=file, index_path=identity, project=infer_project(identity))
+
+
+def index_files(
+    store: Path,
+    config: Config,
+    files: list[Path | IndexableFile],
+    rebuild: bool = False,
+    cleanup_stale: bool = False,
+    incomplete_external_roots: tuple[Path, ...] = (),
+) -> int:
     conn = connect(store)
     ensure_schema(conn)
     if rebuild:
+        load_vec_extension(conn)
         conn.execute("DROP TABLE IF EXISTS vec_chunks")
         conn.execute("DELETE FROM vector_meta")
         conn.execute("DELETE FROM chunks_fts")
@@ -258,15 +456,64 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
         conn.commit()
 
     embedder = get_embedder(config)
+    vector_config_changed = ensure_vector_config(conn, config) if embedder.name != "none" else False
     indexed = 0
-    for path in files:
+    live_paths = {str(_as_indexable_file(store, config, file).index_path) for file in files}
+    if cleanup_stale:
+        existing_paths = [row["path"] for row in conn.execute("SELECT path FROM docs").fetchall()]
+        stale_paths = [
+            path
+            for path in existing_paths
+            if (
+                path.startswith("vaults/")
+                or (
+                    Path(path).is_absolute()
+                    and path not in live_paths
+                    and not any(is_inside_store(root, Path(path)) for root in incomplete_external_roots)
+                )
+            )
+        ]
+        if stale_paths:
+            with conn:
+                for stale_path in stale_paths:
+                    chunk_ids = [
+                        int(row["id"])
+                        for row in conn.execute(
+                            """
+                            SELECT chunks.id
+                            FROM chunks
+                            JOIN docs ON docs.id = chunks.doc_id
+                            WHERE docs.path = ?
+                            """,
+                            (stale_path,),
+                        ).fetchall()
+                    ]
+                    if chunk_ids:
+                        placeholders = ",".join("?" for _ in chunk_ids)
+                        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+                        if vec_table_active(conn):
+                            conn.execute(f"DELETE FROM vec_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+                    conn.execute("DELETE FROM docs WHERE path = ?", (stale_path,))
+    for file in files:
+        candidate = _as_indexable_file(store, config, file)
+        path = candidate.path
         if not path.exists() or not path.is_file():
             continue
-        rel = relative_to_store(store, path)
+        rel = candidate.index_path
         digest = file_hash(path)
         mtime = path.stat().st_mtime
-        existing = conn.execute("SELECT id, mtime, hash FROM docs WHERE path = ?", (str(rel),)).fetchone()
-        if existing and existing["hash"] == digest and abs(existing["mtime"] - mtime) < 0.0001:
+        existing = conn.execute("SELECT id, mtime, hash, project FROM docs WHERE path = ?", (str(rel),)).fetchone()
+        vectors_complete = True
+        if existing and embedder.name != "none":
+            vectors_complete = doc_vectors_complete(conn, int(existing["id"]))
+        if (
+            existing
+            and existing["hash"] == digest
+            and abs(existing["mtime"] - mtime) < 0.0001
+            and existing["project"] == candidate.project
+            and not vector_config_changed
+            and vectors_complete
+        ):
             continue
 
         text = read_indexable_text(path)
@@ -296,7 +543,7 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
                         title,
                         mtime,
                         digest,
-                        infer_project(rel),
+                        candidate.project,
                         json.dumps(parse_tags(text)),
                         "pdf" if path.suffix.lower() == ".pdf" else "markdown",
                         text if path.suffix.lower() == ".pdf" else None,
@@ -314,7 +561,7 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
                         title,
                         mtime,
                         digest,
-                        infer_project(rel),
+                        candidate.project,
                         json.dumps(parse_tags(text)),
                         "pdf" if path.suffix.lower() == ".pdf" else "markdown",
                         text if path.suffix.lower() == ".pdf" else None,
@@ -344,7 +591,15 @@ def index_files(store: Path, config: Config, files: list[Path], rebuild: bool = 
 
 
 def index_store(store: Path, config: Config, rebuild: bool = False) -> int:
-    return index_files(store, config, iter_indexable_files(store, config), rebuild=rebuild)
+    files, incomplete_external_roots = iter_indexable_files_with_failures(store, config)
+    return index_files(
+        store,
+        config,
+        files,
+        rebuild=rebuild,
+        cleanup_stale=True,
+        incomplete_external_roots=incomplete_external_roots,
+    )
 
 
 def vector_score(query_vector: list[float], vector_json: str | None) -> float:
@@ -395,6 +650,7 @@ def search(store: Path, config: Config, query: str, project: str | None = None, 
     embedder = get_embedder(config)
     if embedder.name != "none":
         qvec = embedder.embed([query])[0]
+        ensure_vec_table(conn, len(qvec))
         scored = []
         if vec_table_active(conn):
             vec_params: list[object] = [sqlite_vec.serialize_float32(qvec), max(limit * 4, limit)]
@@ -448,13 +704,22 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
         return len(files), 0
     conn = connect(store)
     ensure_schema(conn)
-    indexed_rows = conn.execute("SELECT path, mtime, hash FROM docs").fetchall()
+    current_vector_config = vector_config_current(conn)
+    expected_vector_config = vector_config_key(config)
+    vector_config_matches = current_vector_config is None or current_vector_config == expected_vector_config
+    vectors_required = vector_freshness_required(config)
+    indexed_rows = conn.execute("SELECT id, path, mtime, hash, project FROM docs").fetchall()
     indexed = {row["path"]: row for row in indexed_rows}
     fresh = 0
-    for path in files:
-        rel = str(relative_to_store(store, path))
+    for file in files:
+        rel = str(file.index_path)
         row = indexed.get(rel)
-        if row and row["hash"] == file_hash(path):
+        if not row or row["hash"] != file_hash(file.path) or row["project"] != file.project:
+            continue
+        if vectors_required and current_vector_config is not None:
+            if not vector_config_matches or not doc_vectors_complete(conn, int(row["id"])):
+                continue
+        if row:
             fresh += 1
     conn.close()
     return len(files), fresh
