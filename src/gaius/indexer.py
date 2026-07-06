@@ -176,6 +176,13 @@ def vector_config_current(conn: sqlite3.Connection) -> str | None:
     return str(current["value"]) if current else None
 
 
+def vector_freshness_required(config: Config) -> bool:
+    try:
+        return get_embedder(config).name != "none"
+    except Exception:
+        return False
+
+
 def doc_vectors_complete(conn: sqlite3.Connection, doc_id: int) -> bool:
     missing = conn.execute(
         "SELECT COUNT(*) AS count FROM chunks WHERE doc_id = ? AND vector IS NULL",
@@ -700,6 +707,7 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
     current_vector_config = vector_config_current(conn)
     expected_vector_config = vector_config_key(config)
     vector_config_matches = current_vector_config is None or current_vector_config == expected_vector_config
+    vectors_required = vector_freshness_required(config)
     indexed_rows = conn.execute("SELECT id, path, mtime, hash, project FROM docs").fetchall()
     indexed = {row["path"]: row for row in indexed_rows}
     fresh = 0
@@ -708,7 +716,7 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
         row = indexed.get(rel)
         if not row or row["hash"] != file_hash(file.path) or row["project"] != file.project:
             continue
-        if config.embedder != "none" and current_vector_config is not None:
+        if vectors_required and current_vector_config is not None:
             if not vector_config_matches or not doc_vectors_complete(conn, int(row["id"])):
                 continue
         if row:

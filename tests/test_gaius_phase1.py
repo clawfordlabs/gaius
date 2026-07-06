@@ -838,6 +838,46 @@ def test_index_freshness_marks_embedder_change_and_missing_vectors_stale(tmp_pat
     assert index_freshness(store, config_two) == (1, 0)
 
 
+def test_index_freshness_ignores_vectors_when_runtime_embedder_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from gaius.config import Config
+    from gaius.indexer import connect, ensure_schema, index_files, index_freshness
+    from gaius.store import init_store
+
+    class FakeEmbedder:
+        name = "fake"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] for _ in texts]
+
+    class NoEmbedder:
+        name = "none"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return []
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    doc = store / "global" / "autofallback.md"
+    doc.write_text("autofallback searchable\n")
+    vector_config = Config(store=store, embedder="fake-one")
+    auto_config = Config(store=store, embedder="auto")
+
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder())
+    index_files(store, vector_config, [doc], rebuild=True)
+
+    conn = connect(store)
+    ensure_schema(conn)
+    conn.execute("UPDATE chunks SET vector = NULL")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: NoEmbedder())
+
+    assert index_freshness(store, auto_config) == (1, 1)
+
+
 def test_external_project_change_updates_unchanged_docs(tmp_path: Path):
     from gaius.config import Config, ExternalRoot
     from gaius.indexer import index_freshness, index_store, search
