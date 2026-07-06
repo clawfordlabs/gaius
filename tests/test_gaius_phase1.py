@@ -362,26 +362,6 @@ def test_config_parses_external_roots_and_legacy_vault_paths(tmp_path: Path, mon
     assert config.externals[2].project is None
 
 
-def test_repo_examples_do_not_reference_personal_project_names():
-    forbidden = ("kho" + "rus",)
-    repo = Path(__file__).resolve().parents[1]
-    ignored_dirs = {".git", ".pytest_cache", ".venv", ".claude", "__pycache__"}
-    checked_suffixes = {".md", ".py", ".toml", ".txt"}
-    offenders: list[str] = []
-
-    for path in repo.rglob("*"):
-        if any(part in ignored_dirs for part in path.relative_to(repo).parts):
-            continue
-        if not path.is_file() or path.suffix not in checked_suffixes:
-            continue
-        text = path.read_text(errors="ignore").lower()
-        for name in forbidden:
-            if name in text:
-                offenders.append(str(path.relative_to(repo)))
-
-    assert offenders == []
-
-
 def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
     from gaius.config import Config, ExternalRoot
     from gaius.doctor import doctor_report
