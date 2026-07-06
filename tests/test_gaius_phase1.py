@@ -538,6 +538,23 @@ def test_external_root_inside_store_is_not_double_indexed(tmp_path: Path):
     assert [(row["path"], row["project"]) for row in rows] == [("global/notes/overlap.md", None)]
 
 
+def test_doctor_external_count_excludes_store_internal_files(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.doctor import doctor_report
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    internal = store / "global" / "notes" / "internal.md"
+    internal.parent.mkdir(parents=True, exist_ok=True)
+    internal.write_text("internal external overlap\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=(store / "global").resolve()),))
+
+    report = doctor_report(config)
+
+    assert f"{(store / 'global').resolve()} (exists: yes, project: none, indexable: 0)" in report
+
+
 def test_nested_external_roots_use_deepest_project(tmp_path: Path):
     from gaius.config import Config, ExternalRoot
     from gaius.indexer import index_store, search
@@ -620,6 +637,43 @@ def test_incremental_index_removes_legacy_vault_rows(tmp_path: Path):
     assert str(doc.resolve()) in paths
 
 
+def test_incremental_index_removes_legacy_vault_rows_when_scan_empty(tmp_path: Path):
+    from gaius.config import Config
+    from gaius.indexer import connect, ensure_schema, index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    config = Config(store=store, embedder="none")
+    init_store(config, write_user_config=False)
+    conn = connect(store)
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO docs(path, title, mtime, hash, project, tags, kind, cached_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("vaults/old-note.md", "old-note", 0, "old", None, "[]", "markdown", None),
+    )
+    doc_id = conn.execute("SELECT id FROM docs WHERE path = ?", ("vaults/old-note.md",)).fetchone()["id"]
+    cur = conn.execute(
+        "INSERT INTO chunks(doc_id, chunk_index, heading, text, vector) VALUES (?, ?, ?, ?, ?)",
+        (doc_id, 0, "old-note", "legacyempty searchable", None),
+    )
+    conn.execute(
+        "INSERT INTO chunks_fts(rowid, text, path, heading, chunk_id) VALUES (?, ?, ?, ?, ?)",
+        (cur.lastrowid, "legacyempty searchable", "vaults/old-note.md", "old-note", cur.lastrowid),
+    )
+    assert conn.execute("SELECT COUNT(*) AS count FROM docs").fetchone()["count"] == 1
+    conn.commit()
+    conn.close()
+
+    index_store(store, config, rebuild=False)
+
+    assert search(store, config, "legacyempty") == []
+    conn = connect(store)
+    ensure_schema(conn)
+    rows = conn.execute("SELECT path FROM docs").fetchall()
+    conn.close()
+    assert [row["path"] for row in rows] == []
+
+
 def test_vector_config_change_reembeds_unchanged_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from gaius.config import Config
     from gaius.indexer import connect, ensure_schema, index_store, search
@@ -658,6 +712,97 @@ def test_vector_config_change_reembeds_unchanged_docs(tmp_path: Path, monkeypatc
     conn.close()
     assert first_vector != second_vector
     assert json.loads(second_vector) == [0.0, 1.0]
+
+
+def test_index_store_reembeds_docs_left_vectorless_by_incremental_config_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config
+    from gaius.indexer import connect, ensure_schema, index_files, index_store
+    from gaius.store import init_store
+
+    class FakeEmbedder:
+        name = "fake"
+
+        def __init__(self, vector: list[float]):
+            self.vector = vector
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [self.vector for _ in texts]
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    old_doc = store / "global" / "old.md"
+    new_doc = store / "global" / "new.md"
+    old_doc.write_text("oldvector searchable\n")
+    new_doc.write_text("newvector searchable\n")
+    config_one = Config(store=store, embedder="fake-one")
+    config_two = Config(store=store, embedder="fake-two")
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder([1.0, 0.0]))
+    index_files(store, config_one, [old_doc], rebuild=True)
+
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder([0.0, 1.0]))
+    index_files(store, config_two, [new_doc])
+    conn = connect(store)
+    ensure_schema(conn)
+    null_before = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM chunks
+        JOIN docs ON docs.id = chunks.doc_id
+        WHERE docs.path = ? AND chunks.vector IS NULL
+        """,
+        ("global/old.md",),
+    ).fetchone()["count"]
+    conn.close()
+    assert null_before == 1
+
+    index_store(store, config_two, rebuild=False)
+
+    conn = connect(store)
+    ensure_schema(conn)
+    vector = conn.execute(
+        """
+        SELECT chunks.vector
+        FROM chunks
+        JOIN docs ON docs.id = chunks.doc_id
+        WHERE docs.path = ?
+        """,
+        ("global/old.md",),
+    ).fetchone()["vector"]
+    conn.close()
+    assert json.loads(vector) == [0.0, 1.0]
+
+
+def test_index_freshness_marks_embedder_change_and_missing_vectors_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config
+    from gaius.indexer import connect, ensure_schema, index_files, index_freshness, index_store
+    from gaius.store import init_store
+
+    class FakeEmbedder:
+        name = "fake"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] for _ in texts]
+
+    store = tmp_path / "memory"
+    init_store(Config(store=store, embedder="none"), write_user_config=False)
+    doc = store / "global" / "freshness.md"
+    doc.write_text("freshvector searchable\n")
+    config_one = Config(store=store, embedder="fake-one")
+    config_two = Config(store=store, embedder="fake-two")
+    monkeypatch.setattr("gaius.indexer.get_embedder", lambda _config: FakeEmbedder())
+
+    index_files(store, config_one, [doc], rebuild=True)
+    assert index_freshness(store, config_one) == (1, 1)
+    assert index_freshness(store, config_two) == (1, 0)
+
+    index_store(store, config_two, rebuild=False)
+    conn = connect(store)
+    ensure_schema(conn)
+    conn.execute("UPDATE chunks SET vector = NULL")
+    conn.commit()
+    conn.close()
+
+    assert index_freshness(store, config_two) == (1, 0)
 
 
 def test_fastembed_model_config_reaches_constructor(monkeypatch: pytest.MonkeyPatch):

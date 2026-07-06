@@ -165,6 +165,19 @@ def ensure_vector_config(conn: sqlite3.Connection, config: Config) -> bool:
     return True
 
 
+def vector_config_current(conn: sqlite3.Connection) -> str | None:
+    current = conn.execute("SELECT value FROM vector_meta WHERE key = 'embedder'").fetchone()
+    return str(current["value"]) if current else None
+
+
+def doc_vectors_complete(conn: sqlite3.Connection, doc_id: int) -> bool:
+    missing = conn.execute(
+        "SELECT COUNT(*) AS count FROM chunks WHERE doc_id = ? AND vector IS NULL",
+        (doc_id,),
+    ).fetchone()
+    return int(missing["count"]) == 0
+
+
 def vec_table_active(conn: sqlite3.Connection) -> bool:
     if not load_vec_extension(conn):
         return False
@@ -338,9 +351,20 @@ def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[P
     return sorted(set(files), key=lambda path: str(path.resolve()))
 
 
+def is_inside_store(store: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(store.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def iter_effective_external_files(store: Path, root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+    return [path for path in iter_external_files(root, max_file_mb) if not is_inside_store(store, path)]
+
+
 def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
     files: list[IndexableFile] = []
-    store_root = store.resolve()
     roots = [store / "global", store / "projects"]
     for root in roots:
         if not root.exists():
@@ -350,13 +374,8 @@ def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
                 identity = relative_to_store(store, path)
                 files.append(IndexableFile(path=path, index_path=identity, project=infer_project(identity)))
     for root in config.externals:
-        for path in iter_external_files(root, config.index_max_file_mb):
+        for path in iter_effective_external_files(store, root, config.index_max_file_mb):
             resolved = path.resolve()
-            try:
-                resolved.relative_to(store_root)
-                continue
-            except ValueError:
-                pass
             files.append(IndexableFile(path=path, index_path=resolved, project=external_project_for_path(config, path), external=True))
     unique = {str(file.index_path): file for file in files}
     return sorted(unique.values(), key=lambda file: str(file.index_path))
@@ -409,7 +428,7 @@ def index_files(
     vector_config_changed = ensure_vector_config(conn, config) if embedder.name != "none" else False
     indexed = 0
     live_paths = {str(_as_indexable_file(store, config, file).index_path) for file in files}
-    if cleanup_stale and live_paths:
+    if cleanup_stale:
         existing_paths = [row["path"] for row in conn.execute("SELECT path FROM docs").fetchall()]
         stale_paths = [
             path
@@ -449,7 +468,16 @@ def index_files(
         digest = file_hash(path)
         mtime = path.stat().st_mtime
         existing = conn.execute("SELECT id, mtime, hash FROM docs WHERE path = ?", (str(rel),)).fetchone()
-        if existing and existing["hash"] == digest and abs(existing["mtime"] - mtime) < 0.0001 and not vector_config_changed:
+        vectors_complete = True
+        if existing and embedder.name != "none":
+            vectors_complete = doc_vectors_complete(conn, int(existing["id"]))
+        if (
+            existing
+            and existing["hash"] == digest
+            and abs(existing["mtime"] - mtime) < 0.0001
+            and not vector_config_changed
+            and vectors_complete
+        ):
             continue
 
         text = read_indexable_text(path)
@@ -632,13 +660,21 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
         return len(files), 0
     conn = connect(store)
     ensure_schema(conn)
-    indexed_rows = conn.execute("SELECT path, mtime, hash FROM docs").fetchall()
+    current_vector_config = vector_config_current(conn)
+    expected_vector_config = vector_config_key(config)
+    vector_config_matches = current_vector_config is None or current_vector_config == expected_vector_config
+    indexed_rows = conn.execute("SELECT id, path, mtime, hash FROM docs").fetchall()
     indexed = {row["path"]: row for row in indexed_rows}
     fresh = 0
     for file in files:
         rel = str(file.index_path)
         row = indexed.get(rel)
-        if row and row["hash"] == file_hash(file.path):
+        if not row or row["hash"] != file_hash(file.path):
+            continue
+        if config.embedder != "none" and current_vector_config is not None:
+            if not vector_config_matches or not doc_vectors_complete(conn, int(row["id"])):
+                continue
+        if row:
             fresh += 1
     conn.close()
     return len(files), fresh
