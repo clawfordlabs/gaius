@@ -352,7 +352,7 @@ def _git_ls_files(root: Path) -> tuple[list[Path], bool] | None:
 
 def scan_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> ExternalFileScan:
     if not root.path.exists() or not root.path.is_dir():
-        return ExternalFileScan([])
+        return ExternalFileScan([], complete=False)
     max_bytes = int(max_file_mb * 1024 * 1024)
     git_scan = _git_ls_files(root.path)
     if git_scan is None:

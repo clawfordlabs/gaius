@@ -637,6 +637,28 @@ def test_external_git_failure_does_not_purge_existing_indexed_docs(tmp_path: Pat
     assert search(store, config, "gitfailurekeep")
 
 
+def test_unavailable_external_root_does_not_purge_existing_indexed_docs(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "external"
+    external.mkdir()
+    doc = external / "visible.md"
+    doc.write_text("missingrootkeep searchable\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve()),))
+    init_store(config, write_user_config=False)
+
+    index_store(store, config, rebuild=True)
+    assert search(store, config, "missingrootkeep")
+
+    shutil.rmtree(external)
+    index_store(store, config, rebuild=False)
+
+    assert search(store, config, "missingrootkeep")
+
+
 def test_incremental_index_removes_legacy_vault_rows(tmp_path: Path):
     from gaius.config import Config, ExternalRoot
     from gaius.indexer import connect, ensure_schema, index_store, search
