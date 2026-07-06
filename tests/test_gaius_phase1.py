@@ -339,8 +339,8 @@ def test_config_parses_external_roots_and_legacy_vault_paths(tmp_path: Path, mon
         'include = ["notes/**"]\n'
         'exclude = ["notes/private/**"]\n'
         '[[external]]\n'
-        f'path = "{tmp_path / "khorus"}"\n'
-        'project = "khorus"\n'
+        f'path = "{tmp_path / "client-portal"}"\n'
+        'project = "client-portal"\n'
         'exclude = ["node_modules/**"]\n'
         '[fastembed]\n'
         'model = "BAAI/bge-small-en-v1.5"\n'
@@ -356,10 +356,30 @@ def test_config_parses_external_roots_and_legacy_vault_paths(tmp_path: Path, mon
     assert config.externals[0].project is None
     assert config.externals[0].include == ("notes/**",)
     assert config.externals[0].exclude == ("notes/private/**",)
-    assert config.externals[1].project == "khorus"
+    assert config.externals[1].project == "client-portal"
     assert config.externals[1].exclude == ("node_modules/**",)
     assert config.externals[2].path == (Path.home() / "legacy-vault").resolve()
     assert config.externals[2].project is None
+
+
+def test_repo_examples_do_not_reference_personal_project_names():
+    forbidden = ("kho" + "rus",)
+    repo = Path(__file__).resolve().parents[1]
+    ignored_dirs = {".git", ".pytest_cache", ".venv", ".claude", "__pycache__"}
+    checked_suffixes = {".md", ".py", ".toml", ".txt"}
+    offenders: list[str] = []
+
+    for path in repo.rglob("*"):
+        if any(part in ignored_dirs for part in path.relative_to(repo).parts):
+            continue
+        if not path.is_file() or path.suffix not in checked_suffixes:
+            continue
+        text = path.read_text(errors="ignore").lower()
+        for name in forbidden:
+            if name in text:
+                offenders.append(str(path.relative_to(repo)))
+
+    assert offenders == []
 
 
 def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
@@ -379,7 +399,7 @@ def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
     config = Config(
         store=store,
         embedder="none",
-        externals=(ExternalRoot(path=external.resolve(), project="khorus"),),
+        externals=(ExternalRoot(path=external.resolve(), project="example-project"),),
         index_max_file_mb=0.001,
     )
     init_store(config, write_user_config=False)
@@ -388,16 +408,16 @@ def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
 
     assert index_store(store, config, rebuild=True) == 3
 
-    external_results = search(store, config, "externalalpha", project="khorus")
+    external_results = search(store, config, "externalalpha", project="example-project")
     assert external_results
     assert external_results[0].path == (external / "external.md").resolve()
     assert external_results[0].path.is_absolute()
 
-    text_results = search(store, config, "externaltxt", project="khorus")
+    text_results = search(store, config, "externaltxt", project="example-project")
     assert text_results
     assert text_results[0].path == (external / "plain.txt").resolve()
-    assert search(store, config, "externalpython", project="khorus") == []
-    assert search(store, config, "hugeexternal", project="khorus") == []
+    assert search(store, config, "externalpython", project="example-project") == []
+    assert search(store, config, "hugeexternal", project="example-project") == []
 
     internal_results = search(store, config, "internaltext")
     assert internal_results
@@ -406,7 +426,7 @@ def test_external_indexing_paths_project_allowlist_and_size_cap(tmp_path: Path):
 
     report = doctor_report(config)
     assert "External roots:" in report
-    assert f"{external.resolve()} (exists: yes, project: khorus, indexable: 2)" in report
+    assert f"{external.resolve()} (exists: yes, project: example-project, indexable: 2)" in report
 
 
 def test_external_gitignore_is_respected(tmp_path: Path):

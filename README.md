@@ -52,8 +52,8 @@ store_path = "/home/lane/memory"
 path = "~/Documents/Obsidian Vault"
 
 [[external]]
-path = "~/wip/khorus"
-project = "khorus"
+path = "~/work/client-portal"
+project = "client-portal"
 exclude = ["node_modules/**"]
 ```
 
