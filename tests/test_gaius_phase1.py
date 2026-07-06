@@ -604,6 +604,39 @@ def test_external_git_failure_does_not_fallback_to_ignored_rglob(tmp_path: Path,
     assert search(store, config, "ignoredaftergitfailure") == []
 
 
+def test_external_git_failure_does_not_purge_existing_indexed_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "repo"
+    external.mkdir()
+    (external / ".git").mkdir()
+    doc = external / "visible.md"
+    doc.write_text("gitfailurekeep searchable\n")
+    config = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve()),))
+    init_store(config, write_user_config=False)
+
+    calls = 0
+
+    def flaky_git(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return subprocess.CompletedProcess([], 0, stdout=b"visible.md\0", stderr=b"")
+        return subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"fatal")
+
+    monkeypatch.setattr("gaius.indexer.subprocess.run", flaky_git)
+
+    index_store(store, config, rebuild=True)
+    assert search(store, config, "gitfailurekeep")
+
+    index_store(store, config, rebuild=False)
+
+    assert search(store, config, "gitfailurekeep")
+
+
 def test_incremental_index_removes_legacy_vault_rows(tmp_path: Path):
     from gaius.config import Config, ExternalRoot
     from gaius.indexer import connect, ensure_schema, index_store, search
@@ -803,6 +836,31 @@ def test_index_freshness_marks_embedder_change_and_missing_vectors_stale(tmp_pat
     conn.close()
 
     assert index_freshness(store, config_two) == (1, 0)
+
+
+def test_external_project_change_updates_unchanged_docs(tmp_path: Path):
+    from gaius.config import Config, ExternalRoot
+    from gaius.indexer import index_freshness, index_store, search
+    from gaius.store import init_store
+
+    store = tmp_path / "memory"
+    external = tmp_path / "external"
+    external.mkdir()
+    doc = external / "project.md"
+    doc.write_text("projectchange searchable\n")
+    first = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve(), project="old-project"),))
+    second = Config(store=store, embedder="none", externals=(ExternalRoot(path=external.resolve(), project="new-project"),))
+    init_store(first, write_user_config=False)
+
+    index_store(store, first, rebuild=True)
+    assert search(store, first, "projectchange", project="old-project")
+    assert index_freshness(store, second) == (1, 0)
+
+    index_store(store, second, rebuild=False)
+
+    assert search(store, second, "projectchange", project="new-project")
+    assert search(store, second, "projectchange", project="old-project") == []
+    assert index_freshness(store, second) == (1, 1)
 
 
 def test_fastembed_model_config_reaches_constructor(monkeypatch: pytest.MonkeyPatch):

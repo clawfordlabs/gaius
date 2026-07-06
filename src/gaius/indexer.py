@@ -43,6 +43,12 @@ class IndexableFile:
     external: bool = False
 
 
+@dataclass(frozen=True)
+class ExternalFileScan:
+    files: list[Path]
+    complete: bool = True
+
+
 INTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
 EXTERNAL_EXTENSIONS = {".md", ".markdown", ".pdf", ".txt"}
 
@@ -320,7 +326,7 @@ def _external_file_allowed(root: ExternalRoot, path: Path, max_bytes: int) -> bo
     return True
 
 
-def _git_ls_files(root: Path) -> list[Path] | None:
+def _git_ls_files(root: Path) -> tuple[list[Path], bool] | None:
     if not (root / ".git").exists():
         return None
     try:
@@ -331,24 +337,32 @@ def _git_ls_files(root: Path) -> list[Path] | None:
             stderr=subprocess.PIPE,
         )
     except OSError:
-        return []
+        return [], False
     if result.returncode != 0:
-        return []
-    return [root / raw.decode() for raw in result.stdout.split(b"\0") if raw]
+        return [], False
+    return [root / raw.decode() for raw in result.stdout.split(b"\0") if raw], True
 
 
-def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+def scan_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> ExternalFileScan:
     if not root.path.exists() or not root.path.is_dir():
-        return []
+        return ExternalFileScan([])
     max_bytes = int(max_file_mb * 1024 * 1024)
-    git_files = _git_ls_files(root.path)
-    candidates = git_files if git_files is not None else list(root.path.rglob("*"))
+    git_scan = _git_ls_files(root.path)
+    if git_scan is None:
+        candidates = list(root.path.rglob("*"))
+        complete = True
+    else:
+        candidates, complete = git_scan
     files = [
         path
         for path in candidates
         if path.is_file() and _external_file_allowed(root, path, max_bytes)
     ]
-    return sorted(set(files), key=lambda path: str(path.resolve()))
+    return ExternalFileScan(sorted(set(files), key=lambda path: str(path.resolve())), complete=complete)
+
+
+def iter_external_files(root: ExternalRoot, max_file_mb: float = 10.0) -> list[Path]:
+    return scan_external_files(root, max_file_mb).files
 
 
 def is_inside_store(store: Path, path: Path) -> bool:
@@ -363,8 +377,9 @@ def iter_effective_external_files(store: Path, root: ExternalRoot, max_file_mb: 
     return [path for path in iter_external_files(root, max_file_mb) if not is_inside_store(store, path)]
 
 
-def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
+def iter_indexable_files_with_failures(store: Path, config: Config) -> tuple[list[IndexableFile], tuple[Path, ...]]:
     files: list[IndexableFile] = []
+    incomplete_external_roots: list[Path] = []
     roots = [store / "global", store / "projects"]
     for root in roots:
         if not root.exists():
@@ -374,11 +389,19 @@ def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
                 identity = relative_to_store(store, path)
                 files.append(IndexableFile(path=path, index_path=identity, project=infer_project(identity)))
     for root in config.externals:
-        for path in iter_effective_external_files(store, root, config.index_max_file_mb):
+        scan = scan_external_files(root, config.index_max_file_mb)
+        if not scan.complete:
+            incomplete_external_roots.append(root.path.resolve())
+        for path in [path for path in scan.files if not is_inside_store(store, path)]:
             resolved = path.resolve()
             files.append(IndexableFile(path=path, index_path=resolved, project=external_project_for_path(config, path), external=True))
     unique = {str(file.index_path): file for file in files}
-    return sorted(unique.values(), key=lambda file: str(file.index_path))
+    return sorted(unique.values(), key=lambda file: str(file.index_path)), tuple(incomplete_external_roots)
+
+
+def iter_indexable_files(store: Path, config: Config) -> list[IndexableFile]:
+    files, _ = iter_indexable_files_with_failures(store, config)
+    return files
 
 
 def read_indexable_text(path: Path) -> str:
@@ -412,6 +435,7 @@ def index_files(
     files: list[Path | IndexableFile],
     rebuild: bool = False,
     cleanup_stale: bool = False,
+    incomplete_external_roots: tuple[Path, ...] = (),
 ) -> int:
     conn = connect(store)
     ensure_schema(conn)
@@ -435,7 +459,11 @@ def index_files(
             for path in existing_paths
             if (
                 path.startswith("vaults/")
-                or (Path(path).is_absolute() and path not in live_paths)
+                or (
+                    Path(path).is_absolute()
+                    and path not in live_paths
+                    and not any(is_inside_store(root, Path(path)) for root in incomplete_external_roots)
+                )
             )
         ]
         if stale_paths:
@@ -467,7 +495,7 @@ def index_files(
         rel = candidate.index_path
         digest = file_hash(path)
         mtime = path.stat().st_mtime
-        existing = conn.execute("SELECT id, mtime, hash FROM docs WHERE path = ?", (str(rel),)).fetchone()
+        existing = conn.execute("SELECT id, mtime, hash, project FROM docs WHERE path = ?", (str(rel),)).fetchone()
         vectors_complete = True
         if existing and embedder.name != "none":
             vectors_complete = doc_vectors_complete(conn, int(existing["id"]))
@@ -475,6 +503,7 @@ def index_files(
             existing
             and existing["hash"] == digest
             and abs(existing["mtime"] - mtime) < 0.0001
+            and existing["project"] == candidate.project
             and not vector_config_changed
             and vectors_complete
         ):
@@ -555,7 +584,15 @@ def index_files(
 
 
 def index_store(store: Path, config: Config, rebuild: bool = False) -> int:
-    return index_files(store, config, iter_indexable_files(store, config), rebuild=rebuild, cleanup_stale=True)
+    files, incomplete_external_roots = iter_indexable_files_with_failures(store, config)
+    return index_files(
+        store,
+        config,
+        files,
+        rebuild=rebuild,
+        cleanup_stale=True,
+        incomplete_external_roots=incomplete_external_roots,
+    )
 
 
 def vector_score(query_vector: list[float], vector_json: str | None) -> float:
@@ -663,13 +700,13 @@ def index_freshness(store: Path, config: Config) -> tuple[int, int]:
     current_vector_config = vector_config_current(conn)
     expected_vector_config = vector_config_key(config)
     vector_config_matches = current_vector_config is None or current_vector_config == expected_vector_config
-    indexed_rows = conn.execute("SELECT id, path, mtime, hash FROM docs").fetchall()
+    indexed_rows = conn.execute("SELECT id, path, mtime, hash, project FROM docs").fetchall()
     indexed = {row["path"]: row for row in indexed_rows}
     fresh = 0
     for file in files:
         rel = str(file.index_path)
         row = indexed.get(rel)
-        if not row or row["hash"] != file_hash(file.path):
+        if not row or row["hash"] != file_hash(file.path) or row["project"] != file.project:
             continue
         if config.embedder != "none" and current_vector_config is not None:
             if not vector_config_matches or not doc_vectors_complete(conn, int(row["id"])):
