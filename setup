@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Generic install step for gaius: venv, package install, PATH, memory store.
+# Intended to be run by an agent (Claude Code, Codex, Hermes, OpenClaw) that
+# then finishes wiring itself up using the commands printed at the end.
+set -euo pipefail
+cd "$(dirname "$0")"
+REPO_DIR="$(pwd)"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+PYTHON="${PYTHON:-python3}"
+if [ ! -d .venv ]; then
+  "$PYTHON" -m venv .venv
+fi
+.venv/bin/pip install --upgrade pip -q
+.venv/bin/pip install -e . -q
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$REPO_DIR/.venv/bin/gaius" "$HOME/.local/bin/gaius"
+ln -sf "$REPO_DIR/.venv/bin/gaius-mcp" "$HOME/.local/bin/gaius-mcp"
+
+# ~/.local/bin must be on PATH for every shell, including non-interactive ones
+# subprocess-spawned commands run in (e.g. an agent shelling out to `gaius`).
+# .zshrc/.bashrc are only sourced for interactive shells; .zshenv/.profile are
+# sourced for all of them, so that's where this belongs.
+for rcfile in "$HOME/.zshenv" "$HOME/.profile"; do
+  touch "$rcfile"
+  grep -Fq '$HOME/.local/bin' "$rcfile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+done
+
+GAIUS_MCP="$REPO_DIR/.venv/bin/gaius-mcp"
+GAIUS="$REPO_DIR/.venv/bin/gaius"
+CONFIG_FILE="$XDG_CONFIG_HOME/gaius/config.toml"
+if [ -f "$CONFIG_FILE" ] && grep -Eq '^[[:space:]]*store_path[[:space:]]*=' "$CONFIG_FILE"; then
+  GAIUS_MEMORY_DIR= "$GAIUS" init
+else
+  GAIUS_MEMORY_DIR= "$GAIUS" init "$HOME/memory"
+fi
+MEMORY_STORE="$(GAIUS_MEMORY_DIR= "$GAIUS" doctor | awk -F': ' '/^Store:/ {print $2; exit}')"
+
+cat <<EOF
+
+gaius installed at $REPO_DIR
+CLI symlinked to ~/.local/bin/gaius (open a new shell, or: export PATH="\$HOME/.local/bin:\$PATH")
+Memory store: $MEMORY_STORE
+
+Next, register the MCP server and skill for this agent harness.
+
+Use the command or config format native to the harness, but keep the same two
+integration points everywhere:
+
+  MCP server: $GAIUS_MCP
+  Skill text: $GAIUS stub skill
+
+Known examples:
+
+Claude Code:
+  claude mcp add gaius --scope user -- $GAIUS_MCP
+  mkdir -p ~/.claude/skills/gaius && $GAIUS stub skill > ~/.claude/skills/gaius/SKILL.md
+
+Codex (append or merge into ~/.codex/config.toml, then install the skill in the
+Codex skills directory used by this installation):
+  [mcp_servers.gaius]
+  command = "$GAIUS_MCP"
+  mkdir -p ~/.codex/skills/gaius && $GAIUS stub skill > ~/.codex/skills/gaius/SKILL.md
+  # If this Codex surface also reads AGENTS.md, keep this as a backstop:
+  $GAIUS stub agents >> ~/AGENTS.md
+
+Hermes:
+  hermes mcp add gaius --command $GAIUS_MCP
+  # 'hermes skills install' only fetches URLs, not local paths, so drop the
+  # file in directly (same layout hub-installed skills use):
+  mkdir -p ~/.hermes/skills/productivity/gaius && $GAIUS stub skill > ~/.hermes/skills/productivity/gaius/SKILL.md
+
+OpenClaw:
+  openclaw mcp add gaius --command $GAIUS_MCP && openclaw mcp reload
+  mkdir -p /tmp/gaius-skill && $GAIUS stub skill > /tmp/gaius-skill/SKILL.md
+  openclaw skills install /tmp/gaius-skill --global
+  # If the install command is unavailable, copy the generated skill into:
+  #   ~/.openclaw/skills/gaius/SKILL.md
+
+EOF
