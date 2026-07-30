@@ -1,7 +1,7 @@
 # Secure Remote MCP Design
 
 **Date:** 2026-07-30
-**Status:** Draft for user review
+**Status:** Approved
 
 ## Purpose
 
@@ -218,7 +218,7 @@ Implementation follows test-driven development and covers:
 
 - the exact local and remote tool lists;
 - MCP annotations for every remote tool;
-- project, topic, tag, document, and task identifier traversal attempts;
+- project, topic, tag, and document traversal attempts;
 - absolute and external-root `read_doc` rejection;
 - contaminated external search-result filtering;
 - read operations pulling before access;
