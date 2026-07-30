@@ -30,6 +30,48 @@ def has_upstream(store: Path) -> bool:
     return git(store, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False).returncode == 0
 
 
+def require_remote_and_upstream(store: Path) -> None:
+    if not remote_exists(store):
+        raise SyncError("remote MCP requires a configured Git remote")
+    if not has_upstream(store):
+        raise SyncError("remote MCP requires a configured upstream branch")
+
+
+def is_clean(store: Path) -> bool:
+    return not git(store, "status", "--porcelain", check=False).stdout.strip()
+
+
+def head_sha(store: Path) -> str:
+    return git(store, "rev-parse", "HEAD").stdout.strip()
+
+
+def pull_required(store: Path) -> None:
+    require_remote_and_upstream(store)
+    pull = git(store, "pull", "--rebase=false", check=False)
+    if pull.returncode == 0:
+        return
+    if has_conflict(store):
+        raise SyncError("Git merge conflict during remote MCP pull; resolve it manually")
+    raise SyncError((pull.stderr or pull.stdout).strip())
+
+
+def commit_required(store: Path, message: str) -> str:
+    git(store, "add", "-A")
+    if is_clean(store):
+        raise SyncError("Remote MCP write produced no Git changes")
+    commit = git(store, "commit", "-m", message, check=False)
+    if commit.returncode != 0:
+        raise SyncError((commit.stderr or commit.stdout).strip())
+    return head_sha(store)
+
+
+def push_required(store: Path) -> None:
+    require_remote_and_upstream(store)
+    push = git(store, "push", check=False)
+    if push.returncode != 0:
+        raise SyncError((push.stderr or push.stdout).strip())
+
+
 def sync(store: Path, message: str | None = None) -> list[str]:
     messages: list[str] = []
     if remote_exists(store):
