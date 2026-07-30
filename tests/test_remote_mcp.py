@@ -114,6 +114,15 @@ def test_remote_profile_annotations_match_access_mode(tmp_path, monkeypatch):
         )
 
 
+def test_remote_write_descriptions_define_published_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("GAIUS_MEMORY_DIR", str(tmp_path / "memory"))
+    remote = tools(build_server("remote"))
+
+    for name in {"add_memory", "handoff", "log_decision"}:
+        description = remote[name].description or ""
+        assert "push" in description.lower()
+
+
 def test_remote_add_memory_pushes_before_success(remote_mcp):
     result = remote_mcp["tools"]["add_memory"].fn(
         "ChatGPT remote write",

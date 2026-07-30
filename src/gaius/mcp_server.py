@@ -189,6 +189,7 @@ def build_remote_server():
         topic: str | None = None,
         project: str | None = None,
     ) -> dict:
+        """Add a memory; success means its Git commit was pushed upstream."""
         validate_text("memory", text, 64 * 1024)
         clean_tags = tags or []
         if len(clean_tags) > 32:
@@ -208,6 +209,7 @@ def build_remote_server():
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     def handoff(project: str, summary: str) -> dict:
+        """Record a handoff; success means its Git commit was pushed upstream."""
         validate_segment("project", project)
         validate_text("handoff", summary, 64 * 1024)
         return operations.write(
@@ -217,6 +219,7 @@ def build_remote_server():
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     def log_decision(project: str, text: str) -> dict:
+        """Log a decision; success means its Git commit was pushed upstream."""
         validate_segment("project", project)
         validate_text("decision", text, 16 * 1024)
         return operations.write(
