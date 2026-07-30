@@ -87,6 +87,20 @@ def test_project_state_handoff_decide_and_projects(tmp_path: Path):
     assert "gaius" in result.output
 
 
+def test_project_state_can_refuse_to_create_missing_project(tmp_path: Path):
+    from gaius.config import Config
+    from gaius.store import project_state
+
+    store = tmp_path / "memory"
+    store.mkdir()
+    config = Config(store=store)
+
+    with pytest.raises(FileNotFoundError, match="Project does not exist"):
+        project_state(config, "missing", create=False)
+
+    assert not (store / "projects" / "missing").exists()
+
+
 def test_incremental_reindex_updates_changed_markdown(tmp_path: Path):
     store = tmp_path / "memory"
     assert run_cli(store, "init").exit_code == 0
