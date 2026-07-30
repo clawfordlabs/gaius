@@ -123,6 +123,19 @@ def test_remote_write_descriptions_define_published_success(tmp_path, monkeypatc
         assert "push" in description.lower()
 
 
+def test_remote_descriptions_distinguish_notes_from_project_state(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GAIUS_MEMORY_DIR", str(tmp_path / "memory"))
+    remote = tools(build_server("remote"))
+
+    assert "does not update project state" in remote["add_memory"].description.lower()
+    assert "canonical project state" in remote["handoff"].description.lower()
+    assert "does not include project notes" in (
+        remote["get_project_state"].description.lower()
+    )
+
+
 def test_remote_add_memory_pushes_before_success(remote_mcp):
     result = remote_mcp["tools"]["add_memory"].fn(
         "ChatGPT remote write",

@@ -175,6 +175,12 @@ successful MCP sync returns `ok: true`; `clean: true` means there are no remaini
 uncommitted memory changes. If sync fails, report the error and do not claim other
 agents can see the update.
 
+Project state and project notes are distinct. `get_project_state` / `gaius state`
+reads `STATE.md` plus decisions, but does not include notes written by `add_memory` /
+`gaius add --project`. After syncing, search project notes before declaring an update missing.
+Use `handoff` / `gaius handoff` when the update should become canonical project state
+for cross-agent pickup.
+
 Codex note: some Codex sessions expose MCP tools lazily. If a broad tool search
 finds only part of Gaius's expected MCP tool set, run an exact tool search for the
 missing names such as `list_projects read_doc task_status gaius` before falling back

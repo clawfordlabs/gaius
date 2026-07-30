@@ -159,6 +159,7 @@ def build_remote_server():
 
     @mcp.tool(annotations=READ_ANNOTATIONS)
     def get_project_state(project: str) -> str:
+        """Read canonical project state and decisions; does not include project notes."""
         validate_segment("project", project)
         return operations.read(
             "get_project_state",
@@ -189,7 +190,7 @@ def build_remote_server():
         topic: str | None = None,
         project: str | None = None,
     ) -> dict:
-        """Add a memory; success means its Git commit was pushed upstream."""
+        """Add a searchable note; this does not update project state. Success means its Git commit was pushed."""
         validate_text("memory", text, 64 * 1024)
         clean_tags = tags or []
         if len(clean_tags) > 32:
@@ -209,7 +210,7 @@ def build_remote_server():
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     def handoff(project: str, summary: str) -> dict:
-        """Record a handoff; success means its Git commit was pushed upstream."""
+        """Update canonical project state for cross-agent pickup. Success means its Git commit was pushed."""
         validate_segment("project", project)
         validate_text("handoff", summary, 64 * 1024)
         return operations.write(

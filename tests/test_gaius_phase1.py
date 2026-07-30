@@ -282,6 +282,7 @@ def test_stub_and_doctor_report_required_information(tmp_path: Path):
     assert "If using MCP tools, call `sync` before shared reads" in result.output
     assert "Codex note: some Codex sessions expose MCP tools lazily" in result.output
     assert "list_projects read_doc task_status gaius" in result.output
+    assert "search project notes before declaring an update missing" in result.output
 
     result = run_cli(store, "doctor")
     assert result.exit_code == 0, result.output
