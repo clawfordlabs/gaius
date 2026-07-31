@@ -13,8 +13,10 @@ from .remote_operations import RemoteOperations
 from .remote_validation import (
     RemoteValidationError,
     resolve_store_document,
+    resolve_store_path,
     store_relative_path,
     validate_document_reference,
+    validate_path_segment,
     validate_segment,
     validate_text,
 )
@@ -126,6 +128,42 @@ def build_remote_server():
     def relative_value(path: Path) -> str:
         return path.resolve().relative_to(config.store.resolve()).as_posix()
 
+    def project_files(project: str) -> tuple[Path, Path]:
+        base = Path("projects") / project
+        return (
+            resolve_store_path(config.store, base / "STATE.md"),
+            resolve_store_path(config.store, base / "DECISIONS.md"),
+        )
+
+    def validate_project_write_paths(project: str) -> None:
+        base = Path("projects") / project
+        for relative in (
+            base,
+            base / "STATE.md",
+            base / "DECISIONS.md",
+            base / "notes",
+            base / "artifacts",
+        ):
+            resolve_store_path(config.store, relative)
+
+    def read_project_state(project: str) -> str:
+        state, decisions = project_files(project)
+        if not state.is_file() or not decisions.is_file():
+            raise FileNotFoundError(f"Project does not exist: {project}")
+        text = state.read_text()
+        decision_lines = [
+            line
+            for line in decisions.read_text().splitlines()
+            if line.startswith("- ")
+        ]
+        if decision_lines:
+            text += (
+                "\n\n## Recent Decisions\n\n"
+                + "\n".join(decision_lines[-10:])
+                + "\n"
+            )
+        return text
+
     @mcp.tool(annotations=READ_ANNOTATIONS)
     def search_memory(
         query: str,
@@ -142,7 +180,7 @@ def build_remote_server():
             output = []
             for result in search(config.store, config, query, project, limit):
                 relative = store_relative_path(config.store, result.path)
-                if relative is None:
+                if relative is None or not (config.store / relative).is_file():
                     continue
                 output.append(
                     {
@@ -160,10 +198,10 @@ def build_remote_server():
     @mcp.tool(annotations=READ_ANNOTATIONS)
     def get_project_state(project: str) -> str:
         """Read canonical project state and decisions; does not include project notes."""
-        validate_segment("project", project)
+        validate_path_segment("project", project)
         return operations.read(
             "get_project_state",
-            lambda: store_ops.project_state(config, project, create=False),
+            lambda: read_project_state(project),
         )
 
     @mcp.tool(annotations=READ_ANNOTATIONS)
@@ -198,34 +236,55 @@ def build_remote_server():
         for tag in clean_tags:
             validate_segment("tag", tag)
         if topic is not None:
-            validate_segment("topic", topic)
+            validate_path_segment("topic", topic)
         if project is not None:
-            validate_segment("project", project)
+            validate_path_segment("project", project)
+
+        def write_memory() -> str:
+            if project is not None:
+                validate_project_write_paths(project)
+            else:
+                resolve_store_path(
+                    config.store,
+                    Path("global") / (topic or "general"),
+                )
+            return relative_value(
+                store_ops.add_memory(config, text, clean_tags, topic, project)
+            )
+
         return operations.write(
             "add_memory",
-            lambda: relative_value(
-                store_ops.add_memory(config, text, clean_tags, topic, project)
-            ),
+            write_memory,
         )
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     def handoff(project: str, summary: str) -> dict:
         """Update canonical project state for cross-agent pickup. Success means its Git commit was pushed."""
-        validate_segment("project", project)
+        validate_path_segment("project", project)
         validate_text("handoff", summary, 64 * 1024)
+
+        def write_handoff() -> str:
+            validate_project_write_paths(project)
+            return relative_value(store_ops.handoff(config, project, summary))
+
         return operations.write(
             "handoff",
-            lambda: relative_value(store_ops.handoff(config, project, summary)),
+            write_handoff,
         )
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     def log_decision(project: str, text: str) -> dict:
         """Log a decision; success means its Git commit was pushed upstream."""
-        validate_segment("project", project)
+        validate_path_segment("project", project)
         validate_text("decision", text, 16 * 1024)
+
+        def write_decision() -> str:
+            validate_project_write_paths(project)
+            return relative_value(store_ops.decide(config, project, text))
+
         return operations.write(
             "log_decision",
-            lambda: relative_value(store_ops.decide(config, project, text)),
+            write_decision,
         )
 
     return mcp

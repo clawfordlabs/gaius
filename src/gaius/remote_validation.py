@@ -35,6 +35,27 @@ def validate_segment(name: str, value: str) -> str:
     return value
 
 
+def validate_path_segment(name: str, value: str) -> str:
+    validate_segment(name, value)
+    if value in PRIVATE_STORE_PARTS:
+        raise RemoteValidationError(f"{name} must not name private store metadata")
+    return value
+
+
+def resolve_store_path(store: Path, path: Path) -> Path:
+    if path.is_absolute():
+        raise RemoteValidationError("path must be relative to the memory store")
+    root = store.resolve()
+    resolved = (root / path).resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise RemoteValidationError("path escapes the memory store") from exc
+    if any(part in PRIVATE_STORE_PARTS for part in relative.parts):
+        raise RemoteValidationError("path points at private store metadata")
+    return resolved
+
+
 def validate_document_reference(value: str) -> Path:
     if not value or Path(value).is_absolute() or "\0" in value:
         raise RemoteValidationError("document must be a store-relative path or ID")
@@ -51,15 +72,11 @@ def validate_document_reference(value: str) -> Path:
 def store_relative_path(store: Path, path: Path) -> Path | None:
     if path.is_absolute():
         return None
-    root = store.resolve()
-    resolved = (root / path).resolve()
     try:
-        relative = resolved.relative_to(root)
-    except ValueError:
+        resolved = resolve_store_path(store, path)
+    except RemoteValidationError:
         return None
-    if any(part in PRIVATE_STORE_PARTS for part in relative.parts):
-        return None
-    return relative
+    return resolved.relative_to(store.resolve())
 
 
 def resolve_store_document(store: Path, value: str) -> Path:

@@ -196,6 +196,33 @@ def test_remote_reads_pull_fresh_content(remote_mcp):
     assert "Current remote state" in state
 
 
+def test_remote_search_omits_deleted_indexed_memory(remote_mcp):
+    remote_tools = remote_mcp["tools"]
+    added = remote_tools["add_memory"].fn(
+        "memory that will be deleted on another host",
+        [],
+        "cleanup",
+        None,
+    )
+    assert remote_tools["search_memory"].fn("deleted another host", None, 10)
+
+    other = remote_mcp["root"] / "deleter"
+    subprocess.run(
+        ["git", "clone", str(remote_mcp["remote"]), str(other)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    run_git(other, "config", "user.email", "deleter@example.com")
+    run_git(other, "config", "user.name", "Remote Deleter")
+    (other / added["value"]).unlink()
+    run_git(other, "add", "-A")
+    run_git(other, "commit", "-m", "delete indexed memory")
+    run_git(other, "push")
+
+    assert remote_tools["search_memory"].fn("deleted another host", None, 10) == []
+
+
 def test_remote_project_state_does_not_create_missing_project(remote_mcp):
     store = remote_mcp["store"]
 
@@ -205,7 +232,75 @@ def test_remote_project_state_does_not_create_missing_project(remote_mcp):
     assert not (store / "projects" / "missing").exists()
 
 
+@pytest.mark.parametrize("linked_name", ["STATE.md", "DECISIONS.md"])
+def test_remote_project_state_rejects_escaping_file_symlinks(
+    remote_mcp, linked_name
+):
+    store = remote_mcp["store"]
+    project = store / "projects" / "linked"
+    project.mkdir()
+    outside = remote_mcp["root"] / f"outside-{linked_name}"
+    outside.write_text("- host secret\n")
+    for name in {"STATE.md", "DECISIONS.md"}:
+        path = project / name
+        if name == linked_name:
+            path.symlink_to(outside)
+        else:
+            path.write_text(f"# Safe {name}\n")
+    run_git(store, "add", "-A")
+    run_git(store, "commit", "-m", "add linked project file")
+    run_git(store, "push")
+
+    with pytest.raises(RemoteValidationError):
+        remote_mcp["tools"]["get_project_state"].fn("linked")
+
+
+@pytest.mark.parametrize(
+    "tool_name,args",
+    [
+        ("add_memory", ("outside note", [], None, "linked")),
+        ("handoff", ("linked", "outside handoff")),
+        ("log_decision", ("linked", "outside decision")),
+    ],
+)
+def test_remote_writes_reject_escaping_project_symlink(
+    remote_mcp, tool_name, args
+):
+    store = remote_mcp["store"]
+    outside = remote_mcp["root"] / "outside-project"
+    outside.mkdir()
+    (outside / "STATE.md").write_text("# Outside\n")
+    (outside / "DECISIONS.md").write_text("# Outside Decisions\n")
+    (outside / "notes").mkdir()
+    (outside / "artifacts").mkdir()
+    (store / "projects" / "linked").symlink_to(outside, target_is_directory=True)
+    run_git(store, "add", "-A")
+    run_git(store, "commit", "-m", "add linked project")
+    run_git(store, "push")
+    before = {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    }
+
+    result = remote_mcp["tools"][tool_name].fn(*args)
+
+    after = {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    }
+    assert result["ok"] is False
+    assert before == after
+    assert run_git(store, "status", "--porcelain") == ""
+
+
 def test_remote_search_filters_external_results(remote_mcp, monkeypatch):
+    internal = remote_mcp["store"] / "global" / "internal.md"
+    internal.write_text("inside")
+    run_git(remote_mcp["store"], "add", "-A")
+    run_git(remote_mcp["store"], "commit", "-m", "add internal result")
+    run_git(remote_mcp["store"], "push")
     outside = remote_mcp["root"] / "outside.md"
     outside.write_text("outside")
     monkeypatch.setattr(
@@ -243,7 +338,11 @@ def test_remote_search_filters_external_results(remote_mcp, monkeypatch):
         ("get_project_state", ("x" * 129,)),
         ("add_memory", ("text", [], None, "../escape")),
         ("add_memory", ("text", [], "../escape", None)),
+        ("add_memory", ("text", [], None, ".git")),
+        ("add_memory", ("text", [], ".gaius", None)),
         ("add_memory", ("text", ["../escape"], None, None)),
+        ("handoff", (".gaius", "text")),
+        ("log_decision", (".git", "text")),
         ("add_memory", ("text", ["tag"] * 33, None, None)),
         ("add_memory", ("x" * (64 * 1024 + 1), [], None, None)),
         ("handoff", ("project", "x" * (64 * 1024 + 1))),
