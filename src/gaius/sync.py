@@ -37,6 +37,29 @@ def require_remote_and_upstream(store: Path) -> None:
         raise SyncError("remote MCP requires a configured upstream branch")
 
 
+def upstream_push_target(store: Path) -> tuple[str, str]:
+    require_remote_and_upstream(store)
+    branch = git(store, "branch", "--show-current", check=False).stdout.strip()
+    remote = git(
+        store,
+        "config",
+        "--get",
+        f"branch.{branch}.remote",
+        check=False,
+    ).stdout.strip()
+    merge_ref = git(
+        store,
+        "config",
+        "--get",
+        f"branch.{branch}.merge",
+        check=False,
+    ).stdout.strip()
+    configured_remotes = git(store, "remote", check=False).stdout.splitlines()
+    if remote not in configured_remotes or not merge_ref.startswith("refs/heads/"):
+        raise SyncError("remote MCP upstream branch configuration is invalid")
+    return remote, merge_ref
+
+
 def is_clean(store: Path) -> bool:
     return not git(store, "status", "--porcelain", check=False).stdout.strip()
 
@@ -66,8 +89,8 @@ def commit_required(store: Path, message: str) -> str:
 
 
 def push_required(store: Path) -> None:
-    require_remote_and_upstream(store)
-    push = git(store, "push", check=False)
+    remote, merge_ref = upstream_push_target(store)
+    push = git(store, "push", remote, f"HEAD:{merge_ref}", check=False)
     if push.returncode != 0:
         raise SyncError((push.stderr or push.stdout).strip())
 

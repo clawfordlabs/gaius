@@ -37,7 +37,7 @@ def validate_segment(name: str, value: str) -> str:
 
 def validate_path_segment(name: str, value: str) -> str:
     validate_segment(name, value)
-    if value in PRIVATE_STORE_PARTS:
+    if value.casefold() in PRIVATE_STORE_PARTS:
         raise RemoteValidationError(f"{name} must not name private store metadata")
     return value
 
@@ -51,7 +51,7 @@ def resolve_store_path(store: Path, path: Path) -> Path:
         relative = resolved.relative_to(root)
     except ValueError as exc:
         raise RemoteValidationError("path escapes the memory store") from exc
-    if any(part in PRIVATE_STORE_PARTS for part in relative.parts):
+    if any(part.casefold() in PRIVATE_STORE_PARTS for part in relative.parts):
         raise RemoteValidationError("path points at private store metadata")
     return resolved
 
@@ -64,7 +64,7 @@ def validate_document_reference(value: str) -> Path:
     candidate = Path(value)
     if any(part in {"", ".", ".."} for part in candidate.parts):
         raise RemoteValidationError("document contains an unsafe path component")
-    if any(part in PRIVATE_STORE_PARTS for part in candidate.parts):
+    if any(part.casefold() in PRIVATE_STORE_PARTS for part in candidate.parts):
         raise RemoteValidationError("document points at private store metadata")
     return candidate
 

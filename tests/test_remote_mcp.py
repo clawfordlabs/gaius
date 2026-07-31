@@ -340,6 +340,8 @@ def test_remote_search_filters_external_results(remote_mcp, monkeypatch):
         ("add_memory", ("text", [], "../escape", None)),
         ("add_memory", ("text", [], None, ".git")),
         ("add_memory", ("text", [], ".gaius", None)),
+        ("add_memory", ("text", [], None, ".GIT")),
+        ("add_memory", ("text", [], ".GAIUS", None)),
         ("add_memory", ("text", ["../escape"], None, None)),
         ("handoff", (".gaius", "text")),
         ("log_decision", (".git", "text")),

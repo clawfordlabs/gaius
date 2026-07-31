@@ -95,6 +95,42 @@ def test_commit_and_push_required_publish_changes(tmp_path):
     ).stdout
 
 
+def test_push_required_ignores_alternate_push_remote(tmp_path):
+    store, upstream = configured_repo(tmp_path)
+    alternate = tmp_path / "alternate.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(alternate)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    git(store, "remote", "add", "alternate", str(alternate))
+    branch = git(store, "branch", "--show-current")
+    git(store, "config", f"branch.{branch}.pushRemote", "alternate")
+    (store / "global" / "upstream.md").write_text("publish upstream")
+
+    commit_sha = sync_ops.commit_required(store, "publish to upstream")
+    sync_ops.push_required(store)
+
+    assert (
+        git(upstream, "rev-parse", f"refs/heads/{branch}")
+        == commit_sha
+    )
+    assert subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(alternate),
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{branch}",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).returncode != 0
+
+
 def test_remote_read_pulls_before_calling_reader(tmp_path):
     store, remote = configured_repo(tmp_path)
     other = second_checkout(tmp_path, remote)
@@ -229,8 +265,8 @@ def test_remote_operations_serialize_concurrent_readers(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(operations.read, "read_doc", first_reader)
-        second = executor.submit(operations.read, "list_projects", second_reader)
         assert first_started.wait(timeout=2)
+        second = executor.submit(operations.read, "list_projects", second_reader)
         time.sleep(0.05)
         assert call_order == ["first-start"]
         release_first.set()
