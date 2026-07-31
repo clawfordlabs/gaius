@@ -161,6 +161,37 @@ def test_remote_add_memory_pushes_before_success(remote_mcp):
     ).stdout
 
 
+def test_remote_duplicate_add_memory_is_successful_noop(remote_mcp):
+    remote_tools = remote_mcp["tools"]
+    args = ("repeatable remote memory", ["remote"], "tooling", None)
+
+    first = remote_tools["add_memory"].fn(*args)
+    first_head = run_git(remote_mcp["store"], "rev-parse", "HEAD")
+    second = remote_tools["add_memory"].fn(*args)
+
+    assert second == first
+    assert run_git(remote_mcp["store"], "rev-parse", "HEAD") == first_head
+    assert run_git(remote_mcp["store"], "status", "--porcelain") == ""
+
+
+def test_remote_add_memory_does_not_publish_new_ignored_file(remote_mcp):
+    store = remote_mcp["store"]
+    (store / ".gitignore").write_text(".gaius/\nglobal/ignored/\n")
+    run_git(store, "add", "-A")
+    run_git(store, "commit", "-m", "ignore remote destination")
+    run_git(store, "push")
+
+    result = remote_mcp["tools"]["add_memory"].fn(
+        "ignored remote memory",
+        [],
+        "ignored",
+        None,
+    )
+
+    assert result["ok"] is False
+    assert result["published"] is False
+
+
 def push_fresh_content(remote_mcp) -> None:
     other = remote_mcp["root"] / "other"
     subprocess.run(
@@ -230,6 +261,30 @@ def test_remote_project_state_does_not_create_missing_project(remote_mcp):
         remote_mcp["tools"]["get_project_state"].fn("missing")
 
     assert not (store / "projects" / "missing").exists()
+
+
+@pytest.mark.parametrize("link_level", ["root", "entry"])
+def test_remote_list_projects_rejects_escaping_symlinks(remote_mcp, link_level):
+    store = remote_mcp["store"]
+    outside = remote_mcp["root"] / "outside-projects"
+    secret = outside / "host-secret"
+    secret.mkdir(parents=True)
+    (secret / "private.txt").write_text("private host metadata")
+
+    if link_level == "root":
+        (store / "projects").rmdir()
+        (store / "projects").symlink_to(outside, target_is_directory=True)
+    else:
+        (store / "projects" / "linked").symlink_to(
+            secret,
+            target_is_directory=True,
+        )
+    run_git(store, "add", "-A")
+    run_git(store, "commit", "-m", "add escaping projects symlink")
+    run_git(store, "push")
+
+    with pytest.raises(RemoteValidationError):
+        remote_mcp["tools"]["list_projects"].fn()
 
 
 @pytest.mark.parametrize("linked_name", ["STATE.md", "DECISIONS.md"])

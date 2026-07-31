@@ -64,6 +64,20 @@ def is_clean(store: Path) -> bool:
     return not git(store, "status", "--porcelain", check=False).stdout.strip()
 
 
+def is_tracked(store: Path, path: str) -> bool:
+    return (
+        git(
+            store,
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            path,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def head_sha(store: Path) -> str:
     return git(store, "rev-parse", "HEAD").stdout.strip()
 

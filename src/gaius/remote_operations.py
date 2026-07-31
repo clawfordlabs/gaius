@@ -102,7 +102,13 @@ class RemoteOperations:
         self._log(request_id, tool, started, "ok")
         return result
 
-    def write(self, tool: str, writer: Callable[[], T]) -> dict:
+    def write(
+        self,
+        tool: str,
+        writer: Callable[[], T],
+        *,
+        noop_is_success: Callable[[T], bool] | None = None,
+    ) -> dict:
         request_id = uuid4().hex
         started = time.monotonic()
         with self._locked():
@@ -121,6 +127,19 @@ class RemoteOperations:
             self._write_pending(pending)
             try:
                 value = writer()
+                if (
+                    noop_is_success is not None
+                    and sync_ops.is_clean(self.store)
+                    and noop_is_success(value)
+                ):
+                    self.pending_path.unlink()
+                    self._log(request_id, tool, started, "already_published")
+                    return {
+                        "ok": True,
+                        "saved_local": True,
+                        "published": True,
+                        "value": value,
+                    }
                 commit_sha = sync_ops.commit_required(
                     self.store,
                     f"gaius remote: {tool}",

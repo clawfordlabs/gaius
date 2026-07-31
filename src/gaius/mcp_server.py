@@ -164,6 +164,36 @@ def build_remote_server():
             )
         return text
 
+    def list_remote_projects() -> list[str]:
+        projects_root = resolve_store_path(config.store, Path("projects"))
+        if not projects_root.exists():
+            return []
+        if not projects_root.is_dir():
+            raise RemoteValidationError("projects root must be a directory")
+
+        projects: list[tuple[str, float]] = []
+        for unresolved in sorted(projects_root.iterdir()):
+            relative = Path("projects") / unresolved.name
+            project = resolve_store_path(config.store, relative)
+            if not project.is_dir():
+                continue
+            mtimes = []
+            for candidate in project.rglob("*"):
+                candidate_relative = candidate.relative_to(config.store.resolve())
+                resolved = resolve_store_path(config.store, candidate_relative)
+                if resolved.is_file():
+                    mtimes.append(resolved.stat().st_mtime)
+            touched = max(mtimes) if mtimes else project.stat().st_mtime
+            projects.append((unresolved.name, touched))
+        return [
+            name
+            for name, _ in sorted(
+                projects,
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ]
+
     @mcp.tool(annotations=READ_ANNOTATIONS)
     def search_memory(
         query: str,
@@ -208,7 +238,7 @@ def build_remote_server():
     def list_projects() -> list[str]:
         return operations.read(
             "list_projects",
-            lambda: [name for name, _ in store_ops.list_projects(config)],
+            list_remote_projects,
         )
 
     @mcp.tool(annotations=READ_ANNOTATIONS)
@@ -255,6 +285,10 @@ def build_remote_server():
         return operations.write(
             "add_memory",
             write_memory,
+            noop_is_success=lambda path: sync_ops.is_tracked(
+                config.store,
+                path,
+            ),
         )
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
