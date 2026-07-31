@@ -87,9 +87,20 @@ def read_doc(config: Config, id_or_path: str) -> str:
     raise FileNotFoundError(f"No memory document found for {id_or_path}")
 
 
-def project_state(config: Config, project: str, decisions: int = 10) -> str:
+def project_state(
+    config: Config,
+    project: str,
+    decisions: int = 10,
+    *,
+    create: bool = True,
+) -> str:
     store = ensure_store(config)
-    project_dir = ensure_project(store, project)
+    if create:
+        project_dir = ensure_project(store, project)
+    else:
+        project_dir = store / "projects" / project
+        if not project_dir.is_dir():
+            raise FileNotFoundError(f"Project does not exist: {project}")
     text = (project_dir / "STATE.md").read_text()
     decision_lines = [line for line in (project_dir / "DECISIONS.md").read_text().splitlines() if line.startswith("- ")]
     if decision_lines:

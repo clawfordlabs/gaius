@@ -25,10 +25,12 @@ main differentiator versus hosted memory products:
 - Offsite backup is your responsibility and should be client-side encrypted
   (e.g. restic), so cloud storage only ever holds ciphertext.
 
-The one way data can leave: explicitly configuring `embedder = "openai"` with a
-hosted endpoint, which sends the text of every indexed chunk to that provider.
-Treat that as what it is, opting out of self-sovereignty, or point the same
-setting at a local server (e.g. Ollama) and keep the guarantee.
+Data can leave only through explicit opt-in configuration. Configuring
+`embedder = "openai"` with a hosted endpoint sends the text of every indexed
+chunk to that provider. Enabling remote MCP sends requested memories to the
+hosted agent provider. Treat either choice as opting out of the default
+self-sovereign boundary. A local OpenAI-compatible embedding server preserves
+the local-only guarantee.
 
 Why local-only is good enough: Gaius runs hybrid search, with BM25 keyword
 matching fused with vectors. On a personal corpus, where queries usually share
@@ -176,6 +178,32 @@ Openclaw and anything else that speaks MCP over stdio: point it at the same
 `gaius-mcp` binary. The server exposes `search_memory`, `add_memory`,
 `get_project_state`, `handoff`, `log_decision`, `list_projects`, `read_doc`,
 `sync`, `run_task`, and `task_status`.
+
+### Remote MCP (opt-in)
+
+The default `gaius-mcp` profile is local and uses stdio. Hosted agent surfaces
+can use the reduced remote profile:
+
+```bash
+gaius-mcp --profile remote
+```
+
+The remote profile exposes `search_memory`, `get_project_state`,
+`list_projects`, `read_doc`, `add_memory`, `handoff`, and `log_decision`. It
+does not expose sync controls, external roots, or task execution. Reads pull
+before returning. Writes pull first and report success only after committing
+and pushing the change.
+
+Run remote MCP under a dedicated operating-system account with its own memory
+checkout, index, virtual environment, and git-only credential. Do not configure
+external roots or `task_command` for that account. Put the stdio server behind
+an authenticated outbound tunnel and store its runtime credential outside Git
+with owner-only permissions.
+
+Remote access is explicit opt-in. Memory returned to a hosted agent leaves the
+user's machines and enters that provider's data boundary. Review the provider's
+current tunnel, retention, and workspace-access documentation before enabling
+it.
 
 ### 5. Teach agents to use gaius
 

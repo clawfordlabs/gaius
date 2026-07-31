@@ -1,18 +1,53 @@
 from __future__ import annotations
 
+from argparse import ArgumentParser
+from dataclasses import replace
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
 from .config import load_config
 from .indexer import search
+from .remote_operations import RemoteOperations
+from .remote_validation import (
+    RemoteValidationError,
+    resolve_store_document,
+    resolve_store_path,
+    store_relative_path,
+    validate_document_reference,
+    validate_path_segment,
+    validate_segment,
+    validate_text,
+)
 from . import store as store_ops
 from . import sync as sync_ops
 from . import tasks as task_ops
-from mcp.server.fastmcp import FastMCP
 
 
-def build_server():
+READ_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+
+
+def build_local_server():
     mcp = FastMCP("gaius")
 
     @mcp.tool()
-    def search_memory(query: str, project: str | None = None, limit: int = 10) -> list[dict]:
+    def search_memory(
+        query: str,
+        project: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
         config = load_config()
         return [
             {
@@ -26,7 +61,12 @@ def build_server():
         ]
 
     @mcp.tool()
-    def add_memory(text: str, tags: list[str] | None = None, topic: str | None = None, project: str | None = None) -> str:
+    def add_memory(
+        text: str,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        project: str | None = None,
+    ) -> str:
         return str(store_ops.add_memory(load_config(), text, tags or [], topic, project))
 
     @mcp.tool()
@@ -56,8 +96,15 @@ def build_server():
             messages = sync_ops.sync(config.store, message)
         except sync_ops.SyncError as exc:
             return {"ok": False, "messages": [], "error": str(exc)}
-        status = sync_ops.git(config.store, "status", "--porcelain", check=False).stdout.splitlines()
-        return {"ok": True, "messages": messages, "clean": not status, "status": status}
+        status = sync_ops.git(
+            config.store, "status", "--porcelain", check=False
+        ).stdout.splitlines()
+        return {
+            "ok": True,
+            "messages": messages,
+            "clean": not status,
+            "status": status,
+        }
 
     @mcp.tool()
     def run_task(project: str, prompt: str) -> dict:
@@ -73,5 +120,224 @@ def build_server():
     return mcp
 
 
+def build_remote_server():
+    config = replace(load_config(), externals=(), task_command=())
+    operations = RemoteOperations(config.store)
+    mcp = FastMCP("gaius")
+
+    def relative_value(path: Path) -> str:
+        return path.resolve().relative_to(config.store.resolve()).as_posix()
+
+    def project_files(project: str) -> tuple[Path, Path]:
+        base = Path("projects") / project
+        return (
+            resolve_store_path(config.store, base / "STATE.md"),
+            resolve_store_path(config.store, base / "DECISIONS.md"),
+        )
+
+    def validate_project_write_paths(project: str) -> None:
+        base = Path("projects") / project
+        for relative in (
+            base,
+            base / "STATE.md",
+            base / "DECISIONS.md",
+            base / "notes",
+            base / "artifacts",
+        ):
+            resolve_store_path(config.store, relative)
+
+    def read_project_state(project: str) -> str:
+        state, decisions = project_files(project)
+        if not state.is_file() or not decisions.is_file():
+            raise FileNotFoundError(f"Project does not exist: {project}")
+        text = state.read_text()
+        decision_lines = [
+            line
+            for line in decisions.read_text().splitlines()
+            if line.startswith("- ")
+        ]
+        if decision_lines:
+            text += (
+                "\n\n## Recent Decisions\n\n"
+                + "\n".join(decision_lines[-10:])
+                + "\n"
+            )
+        return text
+
+    def list_remote_projects() -> list[str]:
+        projects_root = resolve_store_path(config.store, Path("projects"))
+        if not projects_root.exists():
+            return []
+        if not projects_root.is_dir():
+            raise RemoteValidationError("projects root must be a directory")
+
+        projects: list[tuple[str, float]] = []
+        for unresolved in sorted(projects_root.iterdir()):
+            relative = Path("projects") / unresolved.name
+            project = resolve_store_path(config.store, relative)
+            if not project.is_dir():
+                continue
+            mtimes = []
+            for candidate in project.rglob("*"):
+                candidate_relative = candidate.relative_to(config.store.resolve())
+                resolved = resolve_store_path(config.store, candidate_relative)
+                if resolved.is_file():
+                    mtimes.append(resolved.stat().st_mtime)
+            touched = max(mtimes) if mtimes else project.stat().st_mtime
+            projects.append((unresolved.name, touched))
+        return [
+            name
+            for name, _ in sorted(
+                projects,
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ]
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    def search_memory(
+        query: str,
+        project: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        validate_text("query", query, 4 * 1024)
+        if project is not None:
+            validate_segment("project", project)
+        if not 1 <= limit <= 50:
+            raise RemoteValidationError("limit must be between 1 and 50")
+
+        def run_search():
+            output = []
+            for result in search(config.store, config, query, project, limit):
+                relative = store_relative_path(config.store, result.path)
+                if relative is None or not (config.store / relative).is_file():
+                    continue
+                output.append(
+                    {
+                        "path": relative.as_posix(),
+                        "title": result.title,
+                        "heading": result.heading,
+                        "snippet": result.snippet,
+                        "score": result.score,
+                    }
+                )
+            return output
+
+        return operations.read("search_memory", run_search)
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    def get_project_state(project: str) -> str:
+        """Read canonical project state and decisions; does not include project notes."""
+        validate_path_segment("project", project)
+        return operations.read(
+            "get_project_state",
+            lambda: read_project_state(project),
+        )
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    def list_projects() -> list[str]:
+        return operations.read(
+            "list_projects",
+            list_remote_projects,
+        )
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    def read_doc(path: str) -> str:
+        validate_document_reference(path)
+        return operations.read(
+            "read_doc",
+            lambda: resolve_store_document(config.store, path).read_text(
+                errors="replace"
+            ),
+        )
+
+    @mcp.tool(annotations=WRITE_ANNOTATIONS)
+    def add_memory(
+        text: str,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        project: str | None = None,
+    ) -> dict:
+        """Add a searchable note; this does not update project state. Success means its Git commit was pushed."""
+        validate_text("memory", text, 64 * 1024)
+        clean_tags = tags or []
+        if len(clean_tags) > 32:
+            raise RemoteValidationError("tags must contain at most 32 values")
+        for tag in clean_tags:
+            validate_segment("tag", tag)
+        if topic is not None:
+            validate_path_segment("topic", topic)
+        if project is not None:
+            validate_path_segment("project", project)
+
+        def write_memory() -> str:
+            if project is not None:
+                validate_project_write_paths(project)
+            else:
+                resolve_store_path(
+                    config.store,
+                    Path("global") / (topic or "general"),
+                )
+            return relative_value(
+                store_ops.add_memory(config, text, clean_tags, topic, project)
+            )
+
+        return operations.write(
+            "add_memory",
+            write_memory,
+            noop_is_success=lambda path: sync_ops.is_tracked(
+                config.store,
+                path,
+            ),
+        )
+
+    @mcp.tool(annotations=WRITE_ANNOTATIONS)
+    def handoff(project: str, summary: str) -> dict:
+        """Update canonical project state for cross-agent pickup. Success means its Git commit was pushed."""
+        validate_path_segment("project", project)
+        validate_text("handoff", summary, 64 * 1024)
+
+        def write_handoff() -> str:
+            validate_project_write_paths(project)
+            return relative_value(store_ops.handoff(config, project, summary))
+
+        return operations.write(
+            "handoff",
+            write_handoff,
+        )
+
+    @mcp.tool(annotations=WRITE_ANNOTATIONS)
+    def log_decision(project: str, text: str) -> dict:
+        """Log a decision; success means its Git commit was pushed upstream."""
+        validate_path_segment("project", project)
+        validate_text("decision", text, 16 * 1024)
+
+        def write_decision() -> str:
+            validate_project_write_paths(project)
+            return relative_value(store_ops.decide(config, project, text))
+
+        return operations.write(
+            "log_decision",
+            write_decision,
+        )
+
+    return mcp
+
+
+def build_server(profile: str = "local"):
+    if profile == "local":
+        return build_local_server()
+    if profile == "remote":
+        return build_remote_server()
+    raise ValueError(f"Unknown MCP profile: {profile}")
+
+
 def main() -> None:
-    build_server().run()
+    parser = ArgumentParser(prog="gaius-mcp")
+    parser.add_argument(
+        "--profile",
+        choices=("local", "remote"),
+        default="local",
+    )
+    args = parser.parse_args()
+    build_server(args.profile).run()
