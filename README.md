@@ -238,8 +238,10 @@ gaius sync
 ```
 
 Concurrent, complete timestamped handoffs and decision entries are merged automatically
-in chronological order. Any other conflict stops loudly and intentionally remains in
-Git's protected merge state. Resolve and commit the files manually, or run
+in chronological order only when the file exists in the common Git base and both sides
+preserve every base entry unchanged. Concurrent first creation of the same project is an
+add/add conflict; that and every other unsafe conflict stop loudly and intentionally
+remain in Git's protected merge state. Resolve and commit the files manually, or run
 `git merge --abort`; `gaius sync` refuses retries until the operation is complete.
 
 Every agent should sync before its first shared-memory read and immediately after every
