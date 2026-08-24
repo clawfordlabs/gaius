@@ -62,8 +62,6 @@ Codex skills directory used by this installation):
   [mcp_servers.gaius]
   command = "$GAIUS_MCP"
   mkdir -p ~/.codex/skills/gaius && $GAIUS stub skill > ~/.codex/skills/gaius/SKILL.md
-  # If this Codex surface also reads AGENTS.md, keep this as a backstop:
-  $GAIUS stub agents >> ~/AGENTS.md
 
 Hermes:
   hermes mcp add gaius --command $GAIUS_MCP

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,10 @@ from pypdf.generic import DictionaryObject, NameObject, StreamObject
 class CliResult:
     exit_code: int
     output: str
+
+def assert_utc_timestamp(value: str) -> None:
+    assert datetime.fromisoformat(value.replace("Z", "+00:00")).utcoffset() == timedelta(0)
+
 
 
 def run_cli(memory_dir: Path, *args: str):
@@ -147,6 +152,66 @@ def test_sync_happy_path_in_tmp_git_repo(tmp_path: Path):
     assert "test sync" in pushed
 
 
+def test_sync_uses_neutral_utc_commit_metadata(tmp_path: Path):
+    store = tmp_path / "memory"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    assert run_cli(store, "init").exit_code == 0
+    subprocess.run(["git", "-C", str(store), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(store), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(store), "remote", "add", "origin", str(remote)], check=True)
+    assert run_cli(store, "add", "Sync test memory", "--topic", "tooling").exit_code == 0
+    assert run_cli(store, "sync").exit_code == 0
+
+    result = subprocess.run(
+        ["git", "-C", str(store), "log", "-1", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    author_name, author_email, author_time, committer_name, committer_email, committer_time = result.stdout.strip().split("\x00")
+    assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
+    assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
+    assert_utc_timestamp(author_time)
+    assert_utc_timestamp(committer_time)
+
+
+def test_sync_uses_neutral_utc_merge_metadata(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    assert run_cli(primary, "init").exit_code == 0
+    subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(primary), "remote", "add", "origin", str(remote)], check=True)
+    assert run_cli(primary, "add", "Initial memory", "--topic", "initial").exit_code == 0
+    assert run_cli(primary, "sync").exit_code == 0
+
+    subprocess.run(["git", "clone", str(remote), str(secondary)], check=True)
+    subprocess.run(["git", "-C", str(secondary), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(secondary), "config", "user.name", "Test User"], check=True)
+    assert run_cli(secondary, "add", "Remote memory", "--topic", "remote").exit_code == 0
+    assert run_cli(secondary, "sync").exit_code == 0
+    assert run_cli(primary, "add", "Local memory", "--topic", "local").exit_code == 0
+    subprocess.run(["git", "-C", str(primary), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(primary), "commit", "-m", "Local memory"], check=True)
+    assert run_cli(primary, "sync").exit_code == 0
+
+    result = subprocess.run(
+        ["git", "-C", str(primary), "log", "-1", "--format=%s%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    subject, author_name, author_email, author_time, committer_name, committer_email, committer_time = result.stdout.strip().split("\x00")
+    assert subject.startswith("Merge ")
+    assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
+    assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
+    assert_utc_timestamp(author_time)
+    assert_utc_timestamp(committer_time)
+
+
 def run_setup(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     repo = Path(__file__).resolve().parents[1]
     env = {**os.environ, "HOME": str(home), "PYTHON": sys.executable, "XDG_CONFIG_HOME": str(home / ".config")}
@@ -251,15 +316,13 @@ def test_mcp_sync_commits_and_pushes_tmp_git_repo(tmp_path: Path, monkeypatch: p
     assert "mcp sync test" in pushed
 
 
-def test_stub_and_doctor_report_required_information(tmp_path: Path):
+def test_skill_stub_is_the_only_instruction_integration(tmp_path: Path):
     store = tmp_path / "memory"
     assert run_cli(store, "init").exit_code == 0
 
-    result = run_cli(store, "stub", "agents")
-    assert result.exit_code == 0, result.output
-    assert "gaius sync` before reading shared state" in result.output
-    assert "Read project state at session start" in result.output
-    assert "gaius handoff" in result.output
+    for target in ((), ("agents",), ("claude",), ("generic",)):
+        result = run_cli(store, "stub", *target)
+        assert result.exit_code != 0, result.output
 
     result = run_cli(store, "stub", "skill")
     assert result.exit_code == 0, result.output

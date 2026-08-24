@@ -120,33 +120,10 @@ def sync(message: str | None) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-STUBS = {
-    "claude": "CLAUDE.md",
-    "agents": "AGENTS.md",
-    "generic": "agent instructions",
-}
-
-
 @cli.command()
-@click.argument("target", required=False, type=click.Choice(["claude", "agents", "generic", "skill"]))
-def stub(target: str | None) -> None:
-    target = target or "generic"
-    if target == "skill":
-        click.echo(SKILL_MD)
-        return
-    click.echo(
-        f"""## Gaius Memory Instructions for {STUBS[target]}
-
-- Read project state at session start with `gaius state <project>` or by opening `projects/<project>/STATE.md`.
-- Run `gaius sync` before reading shared state so local memory is current.
-- Use `gaius search "<query>"` before relying on memory or asking the user to repeat durable context.
-- Add durable facts with `gaius add "<text>" --tags a,b --topic <topic>` or `--project <project>`.
-- Log decisions with `gaius decide <project> "<decision>"`.
-- Before ending work, run `gaius handoff <project> --message "<summary and next steps>"`.
-- Run `gaius sync` immediately after writing memory. If sync fails, report the error instead of claiming other agents can see the update.
-- Use `gaius sync` instead of raw git commands for the memory repo unless the user explicitly asks.
-"""
-    )
+@click.argument("target", type=click.Choice(["skill"]))
+def stub(target: str) -> None:
+    click.echo(SKILL_MD)
 
 
 SKILL_MD = """---
