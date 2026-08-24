@@ -87,6 +87,18 @@ def test_project_state_handoff_decide_and_projects(tmp_path: Path):
     assert "gaius" in result.output
 
 
+def test_decide_rejects_multiline_text(tmp_path: Path):
+    store = tmp_path / "memory"
+    assert run_cli(store, "init").exit_code == 0
+
+    result = run_cli(store, "decide", "gaius", "First line.\nSecond line.")
+
+    assert result.exit_code != 0
+    assert "Decision text must be a single line." in result.output
+    assert "Traceback" not in result.output
+    assert not (store / "projects" / "gaius" / "DECISIONS.md").exists()
+
+
 def test_incremental_reindex_updates_changed_markdown(tmp_path: Path):
     store = tmp_path / "memory"
     assert run_cli(store, "init").exit_code == 0
@@ -251,7 +263,7 @@ def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
     assert decisions.index("Local decision.") < decisions.index("Remote decision.")
 
 
-def test_sync_merges_multiline_decision_during_concurrent_merge(tmp_path: Path):
+def test_sync_rejects_legacy_multiline_decision_during_concurrent_merge(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
     remote = tmp_path / "remote.git"
@@ -266,9 +278,8 @@ def test_sync_merges_multiline_decision_during_concurrent_merge(tmp_path: Path):
 
     assert run_cli(secondary, "sync").exit_code == 0
     result = run_cli(primary, "sync")
-    assert result.exit_code == 0, result.output
-    decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
-    assert "Base decision.\n\n- Supporting rationale.\n- 2026-08-24T01:00:00+00:00" in decisions
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
 
 
 

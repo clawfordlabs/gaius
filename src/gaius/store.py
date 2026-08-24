@@ -8,6 +8,10 @@ from .indexer import index_files
 from .utils import now_iso, short_hash, slugify, title_for_project, today
 
 
+class DecisionError(ValueError):
+    pass
+
+
 def init_store(config: Config, write_user_config: bool = True) -> Path:
     store = config.store
     for subdir in ["global", "projects", ".gaius"]:
@@ -114,6 +118,8 @@ def handoff(config: Config, project: str, summary: str) -> Path:
 
 
 def decide(config: Config, project: str, text: str) -> Path:
+    if "\n" in text.rstrip("\r\n") or "\r" in text.rstrip("\r\n"):
+        raise DecisionError("Decision text must be a single line.")
     store = ensure_store(config)
     project_dir = ensure_project(store, project)
     path = project_dir / "DECISIONS.md"

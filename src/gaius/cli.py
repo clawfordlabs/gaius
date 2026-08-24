@@ -7,7 +7,7 @@ import click
 from .config import load_config
 from .doctor import doctor_report
 from .indexer import index_store, search
-from .store import add_memory, decide as decide_memory, handoff as handoff_memory
+from .store import DecisionError, add_memory, decide as decide_memory, handoff as handoff_memory
 from .store import init_store, list_projects, project_state, read_doc
 from .sync import SyncError, sync as sync_memory
 from .tasks import TaskError, list_tasks, run_task, task_status
@@ -97,7 +97,10 @@ def handoff(project: str, message: str | None, read_stdin: bool) -> None:
 @click.argument("project")
 @click.argument("text")
 def decide(project: str, text: str) -> None:
-    path = decide_memory(load_config(), project, text)
+    try:
+        path = decide_memory(load_config(), project, text)
+    except DecisionError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(path)
 
 

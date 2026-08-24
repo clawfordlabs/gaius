@@ -293,6 +293,9 @@ gaius task myproject "Summarize the PDF artifacts."
 gaius doctor                     # store, git, index freshness, embedder status
 ```
 
+`gaius decide` records one line per decision. Put longer rationale in a note or
+handoff, then record the concise decision here.
+
 `GAIUS_MEMORY_DIR=/tmp/scratch` points any command at an alternate store. The
 tests use this so they never touch a real store.
 

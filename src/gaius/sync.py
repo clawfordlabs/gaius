@@ -15,9 +15,8 @@ HANDOFF_SECTION = re.compile(
     rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?)"
     rf"(?=^## Session Handoff - {TIMESTAMP}|^## Current Status|\Z)"
 )
-DECISION_ENTRY = re.compile(
-    rf"(?ms)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - .*?)(?=^- {TIMESTAMP} - |\Z)"
-)
+DECISION_ENTRY = re.compile(rf"(?m)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - [^\n]*(?:\n|\Z))")
+DECISIONS_REMAINDER = re.compile(r"^# [^\n]+\n*$")
 STATE_PATH = re.compile(r"^projects/[^/]+/STATE\.md$")
 DECISIONS_PATH = re.compile(r"^projects/[^/]+/DECISIONS\.md$")
 
@@ -91,6 +90,7 @@ def merge_decisions(base: str, ours: str, theirs: str) -> str | None:
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
+        or not DECISIONS_REMAINDER.fullmatch(remainder)
         or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None
