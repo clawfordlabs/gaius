@@ -228,23 +228,33 @@ session end) as a third, even-less-optional mechanism on tools that support them
 
 ### 6. Sync between machines
 
-`gaius sync` wraps pull → commit → push against whatever remote the store repo
-has. This is typically a bare repo on an always-on node reached over a tailnet,
-never a hosting service holding plaintext:
+`gaius sync` commits local writes, merges remote changes without rebasing, then
+pushes against whatever remote the store repo has. This is typically a bare repo on an
+always-on node reached over a tailnet, never a hosting service holding plaintext:
 
 ```bash
 git -C ~/memory remote add origin user@node:/srv/memory.git
 gaius sync
 ```
 
-On a merge conflict it stops loudly with instructions rather than leaving the
-repo mid-merge.
+Concurrent, complete timestamped handoffs and decision entries written by Gaius are
+merged automatically in chronological order only when the file exists in the common Git
+base and both sides preserve every base entry unchanged. The semantic resolver rejects
+duplicate timestamps when resolving a Git conflict; clean Git merges bypass that resolver.
+Concurrent first creation of the same project and every other unsafe conflict stop loudly
+and intentionally remain in Git's protected merge state. Resolve and commit the files
+manually, or run `git merge --abort`; `gaius sync` refuses retries until the operation is
+complete.
 
-MCP-only agents should call the `sync` tool before reading shared memory and
-immediately after `add_memory`, `handoff`, `log_decision`, or a completed
-`run_task` whose result should be visible elsewhere. A successful MCP sync
-returns `ok: true`; `clean: true` means there are no remaining uncommitted
-memory changes.
+Handoff summaries may use any Markdown heading. Gaius uses
+`<!-- gaius-handoff-end -->` as an internal record boundary; a summary cannot contain
+that marker.
+
+Every agent should sync before its first shared-memory read and immediately after every
+Gaius write. MCP-only agents call the `sync` tool after `add_memory`, `handoff`,
+`log_decision`, or a completed `run_task` whose result should be visible elsewhere. A
+successful MCP sync returns `ok: true`; `clean: true` means there are no remaining
+uncommitted memory changes.
 
 ### 7. Delegate tasks to an agent
 
@@ -288,6 +298,9 @@ gaius projects                   # list projects, most recently touched first
 gaius task myproject "Summarize the PDF artifacts."
 gaius doctor                     # store, git, index freshness, embedder status
 ```
+
+`gaius decide` records one line per decision. Put longer rationale in a note or
+handoff, then record the concise decision here.
 
 `GAIUS_MEMORY_DIR=/tmp/scratch` points any command at an alternate store. The
 tests use this so they never touch a real store.

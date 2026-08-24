@@ -34,7 +34,7 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 - Hybrid search (vector + full-text) over memories, project notes, and external roots (Obsidian/Logseq vaults, existing project directories — see §5.1, §7).
 - Fixed-location project state (`STATE.md`) and decision log (`DECISIONS.md`) with CLI/MCP helpers to read and update them.
 - Text extraction from PDF artifacts at index time so binaries are searchable.
-- One-command sync (`gaius sync`) wrapping pull → commit → push; agents never run raw git.
+- One-command sync (`gaius sync`) that commits local writes, merges remote changes without rebasing, then pushes; agents never run raw git.
 - Standing-instruction stubs for CLAUDE.md / AGENTS.md so agents actually use the store.
 
 **Boundary rule (permanent non-goal):** Gaius never talks to a model and never makes a decision. No model loop, no agent runtime, no scheduling, no channels. The one exception is the optional embeddings call, and even that is config, not architecture. Anything that requires intelligence leaves Gaius through `run_task` and runs in a harness the user already operates (openclaw, Claude Code, Codex). This is the line that keeps Gaius a filing cabinet with a search index rather than another agent harness. If a proposed feature needs an LLM to work, it belongs in a harness, not here.
@@ -118,7 +118,7 @@ gaius state <project>                  # print STATE.md (+ last N decisions)
 gaius handoff <project> [--message|-m <summary>] [--stdin]     # prepend session summary to STATE.md
 gaius decide <project> <text>          # append to DECISIONS.md
 gaius index [--rebuild]                # incremental (or full) reindex, incl. vaults + PDF extraction
-gaius sync [--message <msg>]           # git pull --rebase=false, add -A, commit, push; loud on conflict
+gaius sync [--message <msg>]           # git add/commit, pull --rebase=false, push; safe timestamped-entry merge, loud otherwise
 gaius stub [claude|agents|generic]     # print standing-instruction block for CLAUDE.md/AGENTS.md
 gaius doctor                           # config, index freshness, git remote reachability, embedder status
 ```
@@ -179,7 +179,7 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 | risk | mitigation |
 |---|---|
 | Agents don't write memory (the real failure mode) | `gaius stub` standing instructions; handoff is one command; session-end hooks where the harness supports them |
-| Git conflicts confuse agents | `gaius sync` wraps everything, single branch, partitioned files; on conflict it stops loudly and prints instructions |
+| Git conflicts confuse agents | `gaius sync` commits before merge, safely orders complete timestamped handoff/decision additions, and preserves every other conflict in Git's protected merge state for manual resolution or abort |
 | Embedder unavailable (ONNX wheels, API keys) | FTS5-only mode is always functional; embedder is config, not architecture |
 | Monorepo gets heavy | layout keeps projects self-contained; splitting a project out later is `git filter-repo` + a config edit |
 | Index corruption/staleness | index is disposable; `gaius index --rebuild`; `gaius doctor` reports drift |

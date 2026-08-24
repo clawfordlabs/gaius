@@ -7,7 +7,7 @@ import click
 from .config import load_config
 from .doctor import doctor_report
 from .indexer import index_store, search
-from .store import add_memory, decide as decide_memory, handoff as handoff_memory
+from .store import DecisionError, HandoffError, add_memory, decide as decide_memory, handoff as handoff_memory
 from .store import init_store, list_projects, project_state, read_doc
 from .sync import SyncError, sync as sync_memory
 from .tasks import TaskError, list_tasks, run_task, task_status
@@ -89,7 +89,10 @@ def handoff(project: str, message: str | None, read_stdin: bool) -> None:
         summary = message
     else:
         raise click.UsageError("Provide --message or --stdin")
-    path = handoff_memory(load_config(), project, summary)
+    try:
+        path = handoff_memory(load_config(), project, summary)
+    except HandoffError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(path)
 
 
@@ -97,7 +100,10 @@ def handoff(project: str, message: str | None, read_stdin: bool) -> None:
 @click.argument("project")
 @click.argument("text")
 def decide(project: str, text: str) -> None:
-    path = decide_memory(load_config(), project, text)
+    try:
+        path = decide_memory(load_config(), project, text)
+    except DecisionError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(path)
 
 
@@ -170,10 +176,11 @@ Gaius writes are local until synced. Other agents and machines may not see a han
 task list, note, or decision until `gaius sync` commits and pushes it. Reads may be
 stale until sync pulls first.
 
-If using MCP tools, call `sync` before shared reads and immediately after writes. A
-successful MCP sync returns `ok: true`; `clean: true` means there are no remaining
-uncommitted memory changes. If sync fails, report the error and do not claim other
-agents can see the update.
+Every session MUST sync before its first shared read and immediately after every Gaius
+write, whether it uses MCP or the CLI. For MCP, call `sync`; for the CLI, run
+`gaius sync`. A successful MCP sync returns `ok: true`; `clean: true` means there are
+no remaining uncommitted memory changes. If sync fails, report the error, do not claim
+other agents can see the update, and do not use raw Git unless the user explicitly asks.
 
 Codex note: some Codex sessions expose MCP tools lazily. If a broad tool search
 finds only part of Gaius's expected MCP tool set, run an exact tool search for the
@@ -225,13 +232,14 @@ transcription, OCR, bulk re-analysis of artifacts. Output lands in
 ## Housekeeping
 
 ```bash
-gaius sync                # pull -> commit -> push against the configured remote
+gaius sync                # commit -> merge without rebasing -> push
 gaius doctor               # store/git/index/embedder health check
 gaius index --rebuild      # rebuild the derived search index from scratch
 ```
 
-Always use `gaius sync` instead of raw `git` commands against the memory store — it
-stops loudly on conflicts instead of leaving the repo mid-merge.
+Always use `gaius sync` instead of raw `git` commands against the memory store. Unsafe
+conflicts remain in Git's protected merge state for manual resolution or abort; retries
+are refused until that operation is complete.
 """
 
 

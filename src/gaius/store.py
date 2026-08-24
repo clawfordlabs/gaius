@@ -4,8 +4,19 @@ import subprocess
 from pathlib import Path
 
 from .config import Config, write_config
+from .records import DECISION_END_MARKER, HANDOFF_END_MARKER
 from .indexer import index_files
 from .utils import now_iso, short_hash, slugify, title_for_project, today
+
+
+class DecisionError(ValueError):
+    pass
+
+
+class HandoffError(ValueError):
+    pass
+
+
 
 
 def init_store(config: Config, write_user_config: bool = True) -> Path:
@@ -98,11 +109,13 @@ def project_state(config: Config, project: str, decisions: int = 10) -> str:
 
 
 def handoff(config: Config, project: str, summary: str) -> Path:
+    if HANDOFF_END_MARKER in summary:
+        raise HandoffError(f"Handoff summary cannot contain {HANDOFF_END_MARKER}.")
     store = ensure_store(config)
     project_dir = ensure_project(store, project)
     state = project_dir / "STATE.md"
     existing = state.read_text()
-    section = f"## Session Handoff - {now_iso()}\n\n{summary.rstrip()}\n\n"
+    section = f"## Session Handoff - {now_iso()}\n\n{summary.rstrip()}\n\n{HANDOFF_END_MARKER}\n\n"
     lines = existing.splitlines(keepends=True)
     if lines and lines[0].startswith("# "):
         new_text = lines[0] + "\n" + section + "".join(lines[1:]).lstrip()
@@ -114,11 +127,13 @@ def handoff(config: Config, project: str, summary: str) -> Path:
 
 
 def decide(config: Config, project: str, text: str) -> Path:
+    if "\n" in text.rstrip("\r\n") or "\r" in text.rstrip("\r\n"):
+        raise DecisionError("Decision text must be a single line.")
     store = ensure_store(config)
     project_dir = ensure_project(store, project)
     path = project_dir / "DECISIONS.md"
     with path.open("a") as f:
-        f.write(f"- {now_iso()} - {text.rstrip()}\n")
+        f.write(f"- {now_iso()} - {text.rstrip()}\n{DECISION_END_MARKER}\n")
     index_files(store, config, [path])
     return path
 

@@ -71,11 +71,13 @@ def test_project_state_handoff_decide_and_projects(tmp_path: Path):
     assert "# Gaius" in state_text
     assert "Implemented index skeleton." in state_text
     assert "Session Handoff" in state_text
+    assert "<!-- gaius-handoff-end -->" in state_text
 
     result = run_cli(store, "decide", "gaius", "Use markdown files as canonical store.")
     assert result.exit_code == 0, result.output
     decisions_text = (store / "projects" / "gaius" / "DECISIONS.md").read_text()
     assert "Use markdown files as canonical store." in decisions_text
+    assert "<!-- gaius-decision-end -->" in decisions_text
 
     result = run_cli(store, "state", "gaius")
     assert result.exit_code == 0, result.output
@@ -85,6 +87,30 @@ def test_project_state_handoff_decide_and_projects(tmp_path: Path):
     result = run_cli(store, "projects")
     assert result.exit_code == 0, result.output
     assert "gaius" in result.output
+
+
+def test_handoff_rejects_reserved_end_marker(tmp_path: Path):
+    store = tmp_path / "memory"
+    assert run_cli(store, "init").exit_code == 0
+
+    result = run_cli(store, "handoff", "gaius", "--message", "Quoted <!-- gaius-handoff-end --> marker.")
+
+    assert result.exit_code != 0
+    assert "Handoff summary cannot contain <!-- gaius-handoff-end -->." in result.output
+    assert "Traceback" not in result.output
+    assert not (store / "projects" / "gaius" / "STATE.md").exists()
+
+
+def test_decide_rejects_multiline_text(tmp_path: Path):
+    store = tmp_path / "memory"
+    assert run_cli(store, "init").exit_code == 0
+
+    result = run_cli(store, "decide", "gaius", "First line.\nSecond line.")
+
+    assert result.exit_code != 0
+    assert "Decision text must be a single line." in result.output
+    assert "Traceback" not in result.output
+    assert not (store / "projects" / "gaius" / "DECISIONS.md").exists()
 
 
 def test_incremental_reindex_updates_changed_markdown(tmp_path: Path):
@@ -120,6 +146,22 @@ def test_chunk_markdown_by_heading_with_context_prefix():
     assert any(chunk.heading == "Root > Details" for chunk in chunks)
 
 
+def test_chunk_markdown_excludes_sync_record_markers():
+    from gaius.indexer import chunk_markdown
+
+    text = (
+        "# Demo\n\nVisible handoff text.\n<!-- gaius-handoff-end -->\n"
+        "Visible decision text.\n<!-- gaius-decision-end -->\n"
+    )
+    chunks = chunk_markdown("projects/demo/STATE.md", text)
+    indexed_text = "\n".join(chunk.text for chunk in chunks)
+
+    assert "Visible handoff text." in indexed_text
+    assert "Visible decision text." in indexed_text
+    assert "gaius-handoff-end" not in indexed_text
+    assert "gaius-decision-end" not in indexed_text
+
+
 def test_sync_happy_path_in_tmp_git_repo(tmp_path: Path):
     store = tmp_path / "memory"
     remote = tmp_path / "remote.git"
@@ -145,6 +187,341 @@ def test_sync_happy_path_in_tmp_git_repo(tmp_path: Path):
         stdout=subprocess.PIPE,
     ).stdout
     assert "test sync" in pushed
+
+
+def init_synced_store(store: Path, remote: Path) -> str:
+    assert run_cli(store, "init").exit_code == 0
+    subprocess.run(["git", "-C", str(store), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(store), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(store), "remote", "add", "origin", str(remote)], check=True)
+    result = run_cli(store, "handoff", "demo", "--message", "Initial handoff.")
+    assert result.exit_code == 0, result.output
+    result = run_cli(store, "decide", "demo", "Initial decision.")
+    assert result.exit_code == 0, result.output
+    result = run_cli(store, "sync")
+    assert result.exit_code == 0, result.output
+    return subprocess.run(
+        ["git", "-C", str(store), "branch", "--show-current"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def clone_store(remote: Path, branch: str, destination: Path) -> None:
+    subprocess.run(["git", "clone", "--branch", branch, str(remote), str(destination)], check=True)
+    subprocess.run(["git", "-C", str(destination), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(destination), "config", "user.name", "Test User"], check=True)
+
+
+def prepend_handoff(store: Path, timestamp: str, message: str) -> None:
+    state = store / "projects" / "demo" / "STATE.md"
+    existing = state.read_text()
+    first_line, rest = existing.split("\n", 1)
+    section = f"## Session Handoff - {timestamp}\n\n{message}\n\n<!-- gaius-handoff-end -->\n\n"
+    state.write_text(f"{first_line}\n\n{section}{rest.lstrip()}")
+
+
+def append_decision(store: Path, timestamp: str, message: str) -> None:
+    decisions = store / "projects" / "demo" / "DECISIONS.md"
+    with decisions.open("a") as handle:
+        handle.write(f"- {timestamp} - {message}\n<!-- gaius-decision-end -->\n")
+
+
+def test_sync_merges_concurrent_timestamped_handoffs(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(primary, "2026-08-24T01:00:00+00:00", "Older local handoff.")
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Newer remote handoff.")
+
+    result = run_cli(secondary, "sync")
+    assert result.exit_code == 0, result.output
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    assert "Merged concurrent handoffs" in result.output
+
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert state.index("Newer remote handoff.") < state.index("Older local handoff.")
+
+
+def test_sync_merges_handoffs_with_level_two_headings(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(
+        primary, "2026-08-24T01:00:00+00:00", "Local handoff.\n\n## Next Steps\n\n- Complete local work."
+    )
+    prepend_handoff(
+        secondary, "2026-08-24T02:00:00+00:00", "Remote handoff.\n\n## Findings\n\n- Complete remote work."
+    )
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert "Remote handoff.\n\n## Findings\n\n- Complete remote work." in state
+    assert "Local handoff.\n\n## Next Steps\n\n- Complete local work." in state
+
+
+def test_sync_merges_handoff_with_current_status_heading(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(
+        primary, "2026-08-24T01:00:00+00:00", "Local handoff.\n\n## Current Status\n\n- Summary status."
+    )
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Remote handoff.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert "Local handoff.\n\n## Current Status\n\n- Summary status." in state
+
+
+def test_sync_preserves_handoff_shaped_heading_inside_summary(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(
+        primary,
+        "2026-08-24T01:00:00+00:00",
+        "Local handoff.\n\n## Session Handoff - 2030-01-01T00:00:00+00:00\n\nQuoted handoff.",
+    )
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Remote handoff.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert "Local handoff.\n\n## Session Handoff - 2030-01-01T00:00:00+00:00\n\nQuoted handoff." in state
+
+
+def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    append_decision(primary, "2026-08-24T01:00:00+00:00", "Local decision.")
+    append_decision(secondary, "2026-08-24T02:00:00+00:00", "Remote decision.")
+
+    result = run_cli(secondary, "sync")
+    assert result.exit_code == 0, result.output
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    assert "Merged concurrent decisions" in result.output
+
+    decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
+    assert decisions.index("Local decision.") < decisions.index("Remote decision.")
+
+
+def test_sync_preserves_legacy_multiline_decision_during_concurrent_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    append_decision(primary, "2026-08-24T00:00:00+00:00", "Base decision.\n\n- Supporting rationale.")
+    assert run_cli(primary, "sync").exit_code == 0
+    clone_store(remote, branch, secondary)
+
+    append_decision(primary, "2026-08-24T01:00:00+00:00", "Local decision.")
+    append_decision(secondary, "2026-08-24T02:00:00+00:00", "Remote decision.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
+    assert "Base decision.\n\n- Supporting rationale." in decisions
+
+
+def test_merge_decisions_rejects_legacy_timestamped_decision_body():
+    from gaius.sync import merge_decisions
+
+    base = (
+        "# Demo Decisions\n\n"
+        "- 2026-08-24T00:00:00+00:00 - Base decision.\n\n"
+        "- 2030-01-01T00:00:00+00:00 - Quoted decision.\n"
+    )
+    ours = base + "- 2031-01-01T00:00:00+00:00 - Local decision.\n"
+    theirs = base + "- 2032-01-01T00:00:00+00:00 - Remote decision.\n"
+
+    assert merge_decisions(base, ours, theirs) is None
+
+
+
+
+def test_timestamped_entry_merges_reject_duplicate_timestamps():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nDuplicate handoff.\n\n<!-- gaius-handoff-end -->\n"
+    decision = "- 2026-08-24T01:00:00+00:00 - Duplicate decision.\n<!-- gaius-decision-end -->\n"
+
+    assert merge_handoffs("# Demo\n\n", f"# Demo\n\n{handoff}{handoff}", "# Demo\n\n") is None
+    assert merge_decisions("# Demo Decisions\n\n", f"# Demo Decisions\n\n{decision}{decision}", "# Demo Decisions\n\n") is None
+
+
+def test_timestamped_entry_merges_reject_cross_branch_timestamp_collisions():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff_base = "# Demo\n\n"
+    decision_base = "# Demo Decisions\n\n"
+    local_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nLocal handoff.\n\n<!-- gaius-handoff-end -->\n"
+    remote_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nRemote handoff.\n\n<!-- gaius-handoff-end -->\n"
+    local_decision = "- 2026-08-24T01:00:00+00:00 - Local decision.\n<!-- gaius-decision-end -->\n"
+    remote_decision = "- 2026-08-24T01:00:00+00:00 - Remote decision.\n<!-- gaius-decision-end -->\n"
+
+    assert merge_handoffs(handoff_base, handoff_base + local_handoff, handoff_base + remote_handoff) is None
+    assert merge_decisions(decision_base, decision_base + local_decision, decision_base + remote_decision) is None
+    assert merge_handoffs(handoff_base, handoff_base + local_handoff, handoff_base + local_handoff) is None
+    assert merge_decisions(decision_base, decision_base + local_decision, decision_base + local_decision) is None
+
+
+def test_timestamped_entry_merges_reject_reordered_base_entries():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff_base = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    handoff_ours = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T03:00:00+00:00\n\nLocal handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    handoff_theirs = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T04:00:00+00:00\n\nRemote handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    decision_base = (
+        "# Demo Decisions\n\n"
+        "- 2026-08-24T01:00:00+00:00 - First decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T02:00:00+00:00 - Second decision.\n<!-- gaius-decision-end -->\n"
+    )
+    decision_ours = (
+        "# Demo Decisions\n\n"
+        "- 2026-08-24T02:00:00+00:00 - Second decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T01:00:00+00:00 - First decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T03:00:00+00:00 - Local decision.\n<!-- gaius-decision-end -->\n"
+    )
+    decision_theirs = decision_base + "- 2026-08-24T04:00:00+00:00 - Remote decision.\n<!-- gaius-decision-end -->\n"
+
+    assert merge_handoffs(handoff_base, handoff_ours, handoff_theirs) is None
+    assert merge_decisions(decision_base, decision_ours, decision_theirs) is None
+
+
+def test_merge_handoffs_rejects_base_entry_moved_below_state_tail():
+    from gaius.sync import merge_handoffs
+
+    base_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nBase handoff.\n\n<!-- gaius-handoff-end -->\n"
+    local_handoff = "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nLocal handoff.\n\n<!-- gaius-handoff-end -->\n"
+    remote_handoff = "## Session Handoff - 2026-08-24T03:00:00+00:00\n\nRemote handoff.\n\n<!-- gaius-handoff-end -->\n"
+    state_tail = "## Current Status\n\nUnchanged.\n\n## Next Steps\n\n- Continue.\n"
+    base = f"# Demo\n\n{base_handoff}{state_tail}"
+    ours = f"# Demo\n\n{local_handoff}{state_tail}{base_handoff}"
+    theirs = f"# Demo\n\n{remote_handoff}{base_handoff}{state_tail}"
+
+    assert merge_handoffs(base, ours, theirs) is None
+
+def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    state = primary / "projects" / "demo" / "STATE.md"
+    before, after = state.read_text().split("## Current Status", 1)
+    state.write_text(before.split("## Session Handoff", 1)[0] + "## Current Status" + after)
+    prepend_handoff(primary, "2026-08-24T01:00:00+00:00", "Local replacement handoff.")
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Remote additive handoff.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
+
+def test_merge_decisions_rejects_base_entry_deletion():
+    from gaius.sync import merge_decisions
+
+    base = "# Demo Decisions\n\n- 2026-08-24T00:00:00+00:00 - Initial decision.\n<!-- gaius-decision-end -->\n"
+    ours = "# Demo Decisions\n\n- 2026-08-24T01:00:00+00:00 - Local replacement decision.\n<!-- gaius-decision-end -->\n"
+    theirs = (
+        base
+        + "- 2026-08-24T02:00:00+00:00 - Remote additive decision.\n<!-- gaius-decision-end -->\n"
+    )
+
+    assert merge_decisions(base, ours, theirs) is None
+
+
+def test_sync_leaves_non_handoff_state_edits_for_manual_resolution(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    for store, status in ((primary, "Local status."), (secondary, "Remote status.")):
+        state = store / "projects" / "demo" / "STATE.md"
+        state.write_text(state.read_text().replace("Not yet recorded.", status))
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
+
+
+def test_sync_refuses_retry_during_unresolved_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    for store, status in ((primary, "Local status."), (secondary, "Remote status.")):
+        state = store / "projects" / "demo" / "STATE.md"
+        state.write_text(state.read_text().replace("Not yet recorded.", status))
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    assert run_cli(primary, "sync").exit_code != 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "unresolved Git operation" in result.output
+
+    conflicts = subprocess.run(
+        ["git", "-C", str(primary), "diff", "--name-only", "--diff-filter=U"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.splitlines()
+    assert conflicts == ["projects/demo/STATE.md"]
 
 
 def run_setup(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -265,7 +642,7 @@ def test_stub_and_doctor_report_required_information(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "name: gaius" in result.output
     assert "Gaius writes are local until synced" in result.output
-    assert "If using MCP tools, call `sync` before shared reads" in result.output
+    assert "Every session MUST sync before its first shared read and immediately after every Gaius write" in result.output.replace("\n", " ")
     assert "Codex note: some Codex sessions expose MCP tools lazily" in result.output
     assert "list_projects read_doc task_status gaius" in result.output
 
