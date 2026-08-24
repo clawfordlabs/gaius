@@ -25,11 +25,8 @@ DECISIONS_PATH = re.compile(r"^projects/[^/]+/DECISIONS\.md$")
 def parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-def split_timestamped_entries(
-    text: str, pattern: re.Pattern[str]
-) -> tuple[dict[str, str], tuple[str, ...], str] | None:
+def split_timestamped_entries(text: str, pattern: re.Pattern[str]) -> tuple[dict[str, str], str] | None:
     entries: dict[str, str] = {}
-    order: list[str] = []
     for match in pattern.finditer(text):
         timestamp = match.group("timestamp")
         try:
@@ -40,8 +37,7 @@ def split_timestamped_entries(
         if timestamp in entries:
             return None
         entries[timestamp] = section
-        order.append(timestamp)
-    return entries, tuple(order), pattern.sub("", text)
+    return entries, pattern.sub("", text)
 
 
 def preserves_base_entries(base_entries: dict[str, str], candidate_entries: dict[str, str]) -> bool:
@@ -54,28 +50,29 @@ def has_colliding_additions(
     return bool((our_entries.keys() - base_entries.keys()) & (their_entries.keys() - base_entries.keys()))
 
 
-def preserves_base_order(base_order: tuple[str, ...], candidate_order: tuple[str, ...], prepend: bool) -> bool:
-    if not base_order:
-        return True
-    if prepend:
-        return candidate_order[-len(base_order) :] == base_order
-    return candidate_order[: len(base_order)] == base_order
+def preserves_base_structure(
+    base: str, candidate: str, pattern: re.Pattern[str], base_entries: dict[str, str]
+) -> bool:
+    def strip_addition(match: re.Match[str]) -> str:
+        return match.group("section") if match.group("timestamp") in base_entries else ""
+
+    return pattern.sub(strip_addition, candidate) == base
 
 
 def merge_handoffs(base: str, ours: str, theirs: str) -> str | None:
     parsed = [split_timestamped_entries(text, HANDOFF_SECTION) for text in (base, ours, theirs)]
     if any(item is None for item in parsed):
         return None
-    base_entries, base_order, remainder = parsed[0]
-    our_entries, our_order, our_remainder = parsed[1]
-    their_entries, their_order, their_remainder = parsed[2]
+    base_entries, remainder = parsed[0]
+    our_entries, our_remainder = parsed[1]
+    their_entries, their_remainder = parsed[2]
     if (
         remainder != our_remainder
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
-        or not preserves_base_order(base_order, our_order, prepend=True)
-        or not preserves_base_order(base_order, their_order, prepend=True)
+        or not preserves_base_structure(base, ours, HANDOFF_SECTION, base_entries)
+        or not preserves_base_structure(base, theirs, HANDOFF_SECTION, base_entries)
         or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None
@@ -96,16 +93,16 @@ def merge_decisions(base: str, ours: str, theirs: str) -> str | None:
     parsed = [split_timestamped_entries(text, DECISION_ENTRY) for text in (base, ours, theirs)]
     if any(item is None for item in parsed):
         return None
-    base_entries, base_order, remainder = parsed[0]
-    our_entries, our_order, our_remainder = parsed[1]
-    their_entries, their_order, their_remainder = parsed[2]
+    base_entries, remainder = parsed[0]
+    our_entries, our_remainder = parsed[1]
+    their_entries, their_remainder = parsed[2]
     if (
         remainder != our_remainder
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
-        or not preserves_base_order(base_order, our_order, prepend=False)
-        or not preserves_base_order(base_order, their_order, prepend=False)
+        or not preserves_base_structure(base, ours, DECISION_ENTRY, base_entries)
+        or not preserves_base_structure(base, theirs, DECISION_ENTRY, base_entries)
         or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None

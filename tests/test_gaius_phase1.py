@@ -433,6 +433,20 @@ def test_timestamped_entry_merges_reject_reordered_base_entries():
     assert merge_handoffs(handoff_base, handoff_ours, handoff_theirs) is None
     assert merge_decisions(decision_base, decision_ours, decision_theirs) is None
 
+
+def test_merge_handoffs_rejects_base_entry_moved_below_state_tail():
+    from gaius.sync import merge_handoffs
+
+    base_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nBase handoff.\n\n<!-- gaius-handoff-end -->\n"
+    local_handoff = "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nLocal handoff.\n\n<!-- gaius-handoff-end -->\n"
+    remote_handoff = "## Session Handoff - 2026-08-24T03:00:00+00:00\n\nRemote handoff.\n\n<!-- gaius-handoff-end -->\n"
+    state_tail = "## Current Status\n\nUnchanged.\n\n## Next Steps\n\n- Continue.\n"
+    base = f"# Demo\n\n{base_handoff}{state_tail}"
+    ours = f"# Demo\n\n{local_handoff}{state_tail}{base_handoff}"
+    theirs = f"# Demo\n\n{remote_handoff}{base_handoff}{state_tail}"
+
+    assert merge_handoffs(base, ours, theirs) is None
+
 def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
