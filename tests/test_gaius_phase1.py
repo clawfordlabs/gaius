@@ -154,6 +154,8 @@ def init_synced_store(store: Path, remote: Path) -> str:
     subprocess.run(["git", "-C", str(store), "remote", "add", "origin", str(remote)], check=True)
     result = run_cli(store, "handoff", "demo", "--message", "Initial handoff.")
     assert result.exit_code == 0, result.output
+    result = run_cli(store, "decide", "demo", "Initial decision.")
+    assert result.exit_code == 0, result.output
     result = run_cli(store, "sync")
     assert result.exit_code == 0, result.output
     return subprocess.run(
@@ -224,6 +226,45 @@ def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
 
     decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
     assert decisions.index("Local decision.") < decisions.index("Remote decision.")
+
+
+def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    state = primary / "projects" / "demo" / "STATE.md"
+    before, after = state.read_text().split("## Current Status", 1)
+    state.write_text(before.split("## Session Handoff", 1)[0] + "## Current Status" + after)
+    prepend_handoff(primary, "2026-08-24T01:00:00+00:00", "Local replacement handoff.")
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Remote additive handoff.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
+
+
+def test_sync_rejects_decision_deletion_during_concurrent_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    decisions = primary / "projects" / "demo" / "DECISIONS.md"
+    decisions.write_text("\n".join(line for line in decisions.read_text().splitlines() if "Initial decision." not in line) + "\n")
+    append_decision(primary, "2026-08-24T01:00:00+00:00", "Local replacement decision.")
+    append_decision(secondary, "2026-08-24T02:00:00+00:00", "Remote additive decision.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
 
 
 def test_sync_leaves_non_handoff_state_edits_for_manual_resolution(tmp_path: Path):

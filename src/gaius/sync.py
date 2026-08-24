@@ -39,6 +39,10 @@ def split_timestamped_entries(text: str, pattern: re.Pattern[str]) -> tuple[dict
     return entries, pattern.sub("", text)
 
 
+def preserves_base_entries(base_entries: dict[str, str], candidate_entries: dict[str, str]) -> bool:
+    return all(candidate_entries.get(timestamp) == section for timestamp, section in base_entries.items())
+
+
 def merge_handoffs(base: str, ours: str, theirs: str) -> str | None:
     parsed = [split_timestamped_entries(text, HANDOFF_SECTION) for text in (base, ours, theirs)]
     if any(item is None for item in parsed):
@@ -46,7 +50,12 @@ def merge_handoffs(base: str, ours: str, theirs: str) -> str | None:
     base_entries, remainder = parsed[0]
     our_entries, our_remainder = parsed[1]
     their_entries, their_remainder = parsed[2]
-    if remainder != our_remainder or remainder != their_remainder:
+    if (
+        remainder != our_remainder
+        or remainder != their_remainder
+        or not preserves_base_entries(base_entries, our_entries)
+        or not preserves_base_entries(base_entries, their_entries)
+    ):
         return None
     entries = {**base_entries, **our_entries, **their_entries}
     if any(
@@ -68,7 +77,12 @@ def merge_decisions(base: str, ours: str, theirs: str) -> str | None:
     base_entries, remainder = parsed[0]
     our_entries, our_remainder = parsed[1]
     their_entries, their_remainder = parsed[2]
-    if remainder != our_remainder or remainder != their_remainder:
+    if (
+        remainder != our_remainder
+        or remainder != their_remainder
+        or not preserves_base_entries(base_entries, our_entries)
+        or not preserves_base_entries(base_entries, their_entries)
+    ):
         return None
     entries = {**base_entries, **our_entries, **their_entries}
     if any(
