@@ -167,8 +167,8 @@ def test_sync_uses_neutral_utc_commit_metadata(tmp_path: Path):
     author_name, author_email, author_time, committer_name, committer_email, committer_time = result.stdout.strip().split("\x00")
     assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
     assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
-    assert author_time.endswith("Z")
-    assert committer_time.endswith("Z")
+    assert author_time.endswith(("Z", "+00:00"))
+    assert committer_time.endswith(("Z", "+00:00"))
 
 
 def test_sync_uses_neutral_utc_merge_metadata(tmp_path: Path):
@@ -203,8 +203,8 @@ def test_sync_uses_neutral_utc_merge_metadata(tmp_path: Path):
     assert subject.startswith("Merge ")
     assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
     assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
-    assert author_time.endswith("Z")
-    assert committer_time.endswith("Z")
+    assert author_time.endswith(("Z", "+00:00"))
+    assert committer_time.endswith(("Z", "+00:00"))
 
 
 def run_setup(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
