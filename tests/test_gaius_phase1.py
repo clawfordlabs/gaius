@@ -242,6 +242,25 @@ def test_sync_merges_handoffs_with_level_two_headings(tmp_path: Path):
     assert "Local handoff.\n\n## Next Steps\n\n- Complete local work." in state
 
 
+def test_sync_leaves_handoff_with_reserved_state_heading_for_manual_resolution(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(
+        primary, "2026-08-24T01:00:00+00:00", "Local handoff.\n\n## Current Status\n\n- Ambiguous summary."
+    )
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Remote handoff.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
+
+
 def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"

@@ -244,6 +244,10 @@ the same project, and every other unsafe conflict stop loudly and intentionally 
 Git's protected merge state. Resolve and commit the files manually, or run `git merge
 --abort`; `gaius sync` refuses retries until the operation is complete.
 
+Handoff summaries may use level-two Markdown headings, except `## Current Status`.
+That heading begins the state-file tail and therefore leaves a concurrent merge for
+manual resolution; use another heading for a summary subsection.
+
 Every agent should sync before its first shared-memory read and immediately after every
 Gaius write. MCP-only agents call the `sync` tool after `add_memory`, `handoff`,
 `log_decision`, or a completed `run_task` whose result should be visible elsewhere. A
