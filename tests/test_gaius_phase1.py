@@ -396,6 +396,43 @@ def test_timestamped_entry_merges_reject_cross_branch_timestamp_collisions():
     assert merge_handoffs(handoff_base, handoff_base + local_handoff, handoff_base + local_handoff) is None
     assert merge_decisions(decision_base, decision_base + local_decision, decision_base + local_decision) is None
 
+
+def test_timestamped_entry_merges_reject_reordered_base_entries():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff_base = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    handoff_ours = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T03:00:00+00:00\n\nLocal handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    handoff_theirs = (
+        "# Demo\n\n"
+        "## Session Handoff - 2026-08-24T04:00:00+00:00\n\nRemote handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T02:00:00+00:00\n\nSecond handoff.\n\n<!-- gaius-handoff-end -->\n"
+        "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nFirst handoff.\n\n<!-- gaius-handoff-end -->\n"
+    )
+    decision_base = (
+        "# Demo Decisions\n\n"
+        "- 2026-08-24T01:00:00+00:00 - First decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T02:00:00+00:00 - Second decision.\n<!-- gaius-decision-end -->\n"
+    )
+    decision_ours = (
+        "# Demo Decisions\n\n"
+        "- 2026-08-24T02:00:00+00:00 - Second decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T01:00:00+00:00 - First decision.\n<!-- gaius-decision-end -->\n"
+        "- 2026-08-24T03:00:00+00:00 - Local decision.\n<!-- gaius-decision-end -->\n"
+    )
+    decision_theirs = decision_base + "- 2026-08-24T04:00:00+00:00 - Remote decision.\n<!-- gaius-decision-end -->\n"
+
+    assert merge_handoffs(handoff_base, handoff_ours, handoff_theirs) is None
+    assert merge_decisions(decision_base, decision_ours, decision_theirs) is None
+
 def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
