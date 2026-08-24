@@ -312,6 +312,22 @@ def test_timestamped_entry_merges_reject_duplicate_timestamps():
     assert merge_handoffs("# Demo\n\n", f"# Demo\n\n{handoff}{handoff}", "# Demo\n\n") is None
     assert merge_decisions("# Demo Decisions\n\n", f"# Demo Decisions\n\n{decision}{decision}", "# Demo Decisions\n\n") is None
 
+
+def test_timestamped_entry_merges_reject_cross_branch_timestamp_collisions():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff_base = "# Demo\n\n"
+    decision_base = "# Demo Decisions\n\n"
+    local_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nLocal handoff.\n\n"
+    remote_handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nRemote handoff.\n\n"
+    local_decision = "- 2026-08-24T01:00:00+00:00 - Local decision.\n"
+    remote_decision = "- 2026-08-24T01:00:00+00:00 - Remote decision.\n"
+
+    assert merge_handoffs(handoff_base, handoff_base + local_handoff, handoff_base + remote_handoff) is None
+    assert merge_decisions(decision_base, decision_base + local_decision, decision_base + remote_decision) is None
+    assert merge_handoffs(handoff_base, handoff_base + local_handoff, handoff_base + local_handoff) is None
+    assert merge_decisions(decision_base, decision_base + local_decision, decision_base + local_decision) is None
+
 def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
