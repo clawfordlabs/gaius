@@ -64,12 +64,10 @@ Then read the setup output and finish the integration for this harness:
 
 1. Register `~/gaius/.venv/bin/gaius-mcp` as an MCP server named `gaius`.
 2. Install the generated skill from `~/gaius/.venv/bin/gaius stub skill`
-   into this harness's user/global skills directory if it has one.
-3. Add the lightweight standing-instructions stub from `gaius stub agents` or
-   `gaius stub claude` only if this harness uses those files.
-4. Run `gaius doctor` and tell me whether the memory store, git remote, index,
+   into this harness's user/global skills directory.
+3. Run `gaius doctor` and tell me whether the memory store, git remote, index,
    MCP registration, and skill installation look correct.
-5. Ask me whether I want this memory store synced with another machine I own.
+4. Ask me whether I want this memory store synced with another machine I own.
 ```
 
 ## Install
@@ -179,52 +177,30 @@ Openclaw and anything else that speaks MCP over stdio: point it at the same
 
 ### 5. Teach agents to use gaius
 
-MCP tools are self-documenting — an agent that sees `search_memory`, `add_memory`, etc. in
-its tool list generally figures out when to call them. The `gaius` CLI is not
-self-documenting: an agent only knows to run `gaius search "..."` if something tells it
-to. Two mechanisms cover this, and which ones apply depends on whether the tool has a
-skills system.
+Install the Gaius skill through each agent harness’s native skill mechanism. This is
+the only agent-instruction integration: it keeps durable-memory guidance discoverable
+when relevant without modifying universal policy files.
 
-**Skills (preferred, where supported).** A skill is a small markdown file (YAML
-frontmatter + instructions) that a tool loads on demand, triggered by matching the
-`description` field against what the user asked for — so "remember that X" or "hand off
-this project" resolves to the right `gaius` command without the agent needing an
-always-loaded reminder. Claude Code, the Hermes agent, and OpenClaw all support installing
-a skill from a local directory or file, using a converging "agent skills" format:
+Generate the skill text with:
 
 ```bash
-gaius stub skill > /tmp/gaius-SKILL.md
+gaius stub skill
 ```
 
-- **Claude Code**: skills live at `~/.claude/skills/<name>/SKILL.md` (personal) or
-  `.claude/skills/<name>/SKILL.md` (project). Create the directory and copy the file in:
+- **Claude Code**: install it at `~/.claude/skills/gaius/SKILL.md`.
   ```bash
   mkdir -p ~/.claude/skills/gaius && gaius stub skill > ~/.claude/skills/gaius/SKILL.md
   ```
-- **Hermes**: `hermes skills install <path-or-url>` (accepts a local `SKILL.md` path).
-- **OpenClaw**: `openclaw skills install <local-dir> --global` (accepts a local
-  directory containing `SKILL.md`), then `openclaw mcp reload` isn't needed for skills,
-  but a running agent picks up new skills on its next turn.
+- **Codex**: install it at `~/.codex/skills/gaius/SKILL.md`.
+  ```bash
+  mkdir -p ~/.codex/skills/gaius && gaius stub skill > ~/.codex/skills/gaius/SKILL.md
+  ```
+- **Hermes**: install the local `SKILL.md` in its native skill directory.
+- **OpenClaw**: install a directory containing `SKILL.md` with
+  `openclaw skills install <local-dir> --global`.
 
-**Standing instructions (fallback, and useful everywhere).** Some harnesses also
-read always-loaded instruction files such as `AGENTS.md` or `CLAUDE.md`. For
-those, append a short always-loaded pointer too:
-
-```bash
-gaius stub claude >> ~/.claude/CLAUDE.md
-gaius stub agents >> ~/AGENTS.md
-```
-
-The stub tells agents to run `gaius sync` before shared reads, read
-`projects/<name>/STATE.md` at session start, use `gaius search` for recall,
-record decisions with `gaius decide`, run `gaius handoff` before ending
-substantial work, and run `gaius sync` again after writes. It is worth keeping
-even on skill-capable tools as a lightweight backstop. Skills are triggered by
-the model's own judgment and can occasionally be missed; an always-loaded stub
-cannot.
-
-Not yet explored: hooks (tool-level lifecycle triggers, e.g. auto-running `gaius handoff` on
-session end) as a third, even-less-optional mechanism on tools that support them.
+Gaius never writes `AGENTS.md` or `CLAUDE.md`. Those files are user or repository
+policy and may be symlinked or managed by another workflow.
 
 ### 6. Sync between machines
 

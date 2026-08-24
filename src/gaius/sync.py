@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,8 +9,38 @@ class SyncError(RuntimeError):
     pass
 
 
+def git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+    ):
+        environment.pop(key, None)
+    environment.update(
+        {
+            "TZ": "UTC",
+            "GIT_AUTHOR_NAME": "Gaius",
+            "GIT_AUTHOR_EMAIL": "gaius@local.invalid",
+            "GIT_COMMITTER_NAME": "Gaius",
+            "GIT_COMMITTER_EMAIL": "gaius@local.invalid",
+        }
+    )
+    return environment
+
+
 def git(store: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(store), *args], check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(
+        ["git", "-C", str(store), *args],
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=git_environment(),
+    )
 
 
 def has_conflict(store: Path) -> bool:

@@ -35,7 +35,7 @@ Prior art rejected: gbrain (overengineered, cron-dependent, opaque failures, not
 - Fixed-location project state (`STATE.md`) and decision log (`DECISIONS.md`) with CLI/MCP helpers to read and update them.
 - Text extraction from PDF artifacts at index time so binaries are searchable.
 - One-command sync (`gaius sync`) wrapping pull → commit → push; agents never run raw git.
-- Standing-instruction stubs for CLAUDE.md / AGENTS.md so agents actually use the store.
+- Native skills provide Gaius guidance without modifying `CLAUDE.md` or `AGENTS.md`.
 
 **Boundary rule (permanent non-goal):** Gaius never talks to a model and never makes a decision. No model loop, no agent runtime, no scheduling, no channels. The one exception is the optional embeddings call, and even that is config, not architecture. Anything that requires intelligence leaves Gaius through `run_task` and runs in a harness the user already operates (openclaw, Claude Code, Codex). This is the line that keeps Gaius a filing cabinet with a search index rather than another agent harness. If a proposed feature needs an LLM to work, it belongs in a harness, not here.
 
@@ -119,7 +119,7 @@ gaius handoff <project> [--message|-m <summary>] [--stdin]     # prepend session
 gaius decide <project> <text>          # append to DECISIONS.md
 gaius index [--rebuild]                # incremental (or full) reindex, incl. vaults + PDF extraction
 gaius sync [--message <msg>]           # git pull --rebase=false, add -A, commit, push; loud on conflict
-gaius stub [claude|agents|generic]     # print standing-instruction block for CLAUDE.md/AGENTS.md
+gaius stub skill                         # print the native agent skill
 gaius doctor                           # config, index freshness, git remote reachability, embedder status
 ```
 
