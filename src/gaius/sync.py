@@ -5,14 +5,13 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from .records import DECISION_END_MARKER, HANDOFF_END_MARKER
 
 class SyncError(RuntimeError):
     pass
 
 
 TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})"
-HANDOFF_END_MARKER = "<!-- gaius-handoff-end -->"
-DECISION_END_MARKER = "<!-- gaius-decision-end -->"
 HANDOFF_SECTION = re.compile(
     rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?^{HANDOFF_END_MARKER}\n*)"
 )

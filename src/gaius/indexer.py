@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import Config, ExternalRoot
 from .embeddings import get_embedder
+from .records import SYNC_RECORD_MARKERS
 from .utils import file_hash
 
 try:
@@ -221,6 +222,8 @@ def chunk_markdown(relative_path: str, text: str, max_tokens: int = 400) -> list
 
     for line_no, line in enumerate(text.splitlines()):
         stripped = line.strip()
+        if stripped in SYNC_RECORD_MARKERS:
+            continue
         if stripped.startswith("#"):
             hashes = len(stripped) - len(stripped.lstrip("#"))
             if 1 <= hashes <= 6 and stripped[hashes : hashes + 1] == " ":

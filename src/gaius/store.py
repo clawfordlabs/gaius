@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from .config import Config, write_config
+from .records import DECISION_END_MARKER, HANDOFF_END_MARKER
 from .indexer import index_files
 from .utils import now_iso, short_hash, slugify, title_for_project, today
 
@@ -16,8 +17,6 @@ class HandoffError(ValueError):
     pass
 
 
-HANDOFF_END_MARKER = "<!-- gaius-handoff-end -->"
-DECISION_END_MARKER = "<!-- gaius-decision-end -->"
 
 
 def init_store(config: Config, write_user_config: bool = True) -> Path:

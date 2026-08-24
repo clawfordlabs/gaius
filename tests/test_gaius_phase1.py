@@ -146,6 +146,22 @@ def test_chunk_markdown_by_heading_with_context_prefix():
     assert any(chunk.heading == "Root > Details" for chunk in chunks)
 
 
+def test_chunk_markdown_excludes_sync_record_markers():
+    from gaius.indexer import chunk_markdown
+
+    text = (
+        "# Demo\n\nVisible handoff text.\n<!-- gaius-handoff-end -->\n"
+        "Visible decision text.\n<!-- gaius-decision-end -->\n"
+    )
+    chunks = chunk_markdown("projects/demo/STATE.md", text)
+    indexed_text = "\n".join(chunk.text for chunk in chunks)
+
+    assert "Visible handoff text." in indexed_text
+    assert "Visible decision text." in indexed_text
+    assert "gaius-handoff-end" not in indexed_text
+    assert "gaius-decision-end" not in indexed_text
+
+
 def test_sync_happy_path_in_tmp_git_repo(tmp_path: Path):
     store = tmp_path / "memory"
     remote = tmp_path / "remote.git"
