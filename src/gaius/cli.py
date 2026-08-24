@@ -231,8 +231,9 @@ gaius doctor               # store/git/index/embedder health check
 gaius index --rebuild      # rebuild the derived search index from scratch
 ```
 
-Always use `gaius sync` instead of raw `git` commands against the memory store — it
-stops loudly on conflicts instead of leaving the repo mid-merge.
+Always use `gaius sync` instead of raw `git` commands against the memory store. Unsafe
+conflicts remain in Git's protected merge state for manual resolution or abort; retries
+are refused until that operation is complete.
 """
 
 

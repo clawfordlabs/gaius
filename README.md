@@ -238,8 +238,9 @@ gaius sync
 ```
 
 Concurrent, complete timestamped handoffs and decision entries are merged automatically
-in chronological order. Any other conflict stops loudly with instructions rather than
-leaving the repo mid-merge.
+in chronological order. Any other conflict stops loudly and intentionally remains in
+Git's protected merge state. Resolve and commit the files manually, or run
+`git merge --abort`; `gaius sync` refuses retries until the operation is complete.
 
 Every agent should sync before its first shared-memory read and immediately after every
 Gaius write. MCP-only agents call the `sync` tool after `add_memory`, `handoff`,

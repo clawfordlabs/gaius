@@ -179,7 +179,7 @@ Registered per-tool: `claude mcp add gaius -- gaius-mcp`, Codex `mcp_servers` en
 | risk | mitigation |
 |---|---|
 | Agents don't write memory (the real failure mode) | `gaius stub` standing instructions; handoff is one command; session-end hooks where the harness supports them |
-| Git conflicts confuse agents | `gaius sync` commits before merge, safely orders complete timestamped handoff/decision additions, and stops loudly on every other conflict |
+| Git conflicts confuse agents | `gaius sync` commits before merge, safely orders complete timestamped handoff/decision additions, and preserves every other conflict in Git's protected merge state for manual resolution or abort |
 | Embedder unavailable (ONNX wheels, API keys) | FTS5-only mode is always functional; embedder is config, not architecture |
 | Monorepo gets heavy | layout keeps projects self-contained; splitting a project out later is `git filter-repo` + a config edit |
 | Index corruption/staleness | index is disposable; `gaius index --rebuild`; `gaius doctor` reports drift |
