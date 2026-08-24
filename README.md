@@ -239,10 +239,11 @@ gaius sync
 
 Concurrent, complete timestamped handoffs and decision entries are merged automatically
 in chronological order only when the file exists in the common Git base and both sides
-preserve every base entry unchanged. Duplicate timestamps, concurrent first creation of
-the same project, and every other unsafe conflict stop loudly and intentionally remain in
-Git's protected merge state. Resolve and commit the files manually, or run `git merge
---abort`; `gaius sync` refuses retries until the operation is complete.
+preserve every base entry unchanged. The semantic resolver rejects duplicate timestamps
+when resolving a Git conflict; clean Git merges bypass that resolver. Concurrent first
+creation of the same project and every other unsafe conflict stop loudly and intentionally
+remain in Git's protected merge state. Resolve and commit the files manually, or run `git
+merge --abort`; `gaius sync` refuses retries until the operation is complete.
 
 Handoff summaries may use level-two Markdown headings, except `## Current Status`.
 That heading begins the state-file tail and therefore leaves a concurrent merge for
