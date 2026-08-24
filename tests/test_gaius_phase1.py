@@ -207,6 +207,29 @@ def test_sync_merges_concurrent_timestamped_handoffs(tmp_path: Path):
     assert state.index("Newer remote handoff.") < state.index("Older local handoff.")
 
 
+def test_sync_merges_handoffs_with_level_two_headings(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(
+        primary, "2026-08-24T01:00:00+00:00", "Local handoff.\n\n## Next Steps\n\n- Complete local work."
+    )
+    prepend_handoff(
+        secondary, "2026-08-24T02:00:00+00:00", "Remote handoff.\n\n## Findings\n\n- Complete remote work."
+    )
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert "Remote handoff.\n\n## Findings\n\n- Complete remote work." in state
+    assert "Local handoff.\n\n## Next Steps\n\n- Complete local work." in state
+
+
 def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
@@ -227,6 +250,37 @@ def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
     decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
     assert decisions.index("Local decision.") < decisions.index("Remote decision.")
 
+
+def test_sync_merges_multiline_decision_during_concurrent_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    append_decision(primary, "2026-08-24T00:00:00+00:00", "Base decision.\n\n- Supporting rationale.")
+    assert run_cli(primary, "sync").exit_code == 0
+    clone_store(remote, branch, secondary)
+
+    append_decision(primary, "2026-08-24T01:00:00+00:00", "Local decision.")
+    append_decision(secondary, "2026-08-24T02:00:00+00:00", "Remote decision.")
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
+    assert "Base decision.\n\n- Supporting rationale.\n- 2026-08-24T01:00:00+00:00" in decisions
+
+
+
+
+def test_timestamped_entry_merges_reject_duplicate_timestamps():
+    from gaius.sync import merge_decisions, merge_handoffs
+
+    handoff = "## Session Handoff - 2026-08-24T01:00:00+00:00\n\nDuplicate handoff.\n\n"
+    decision = "- 2026-08-24T01:00:00+00:00 - Duplicate decision.\n"
+
+    assert merge_handoffs("# Demo\n\n", f"# Demo\n\n{handoff}{handoff}", "# Demo\n\n") is None
+    assert merge_decisions("# Demo Decisions\n\n", f"# Demo Decisions\n\n{decision}{decision}", "# Demo Decisions\n\n") is None
 
 def test_sync_rejects_handoff_deletion_during_concurrent_merge(tmp_path: Path):
     primary = tmp_path / "primary"

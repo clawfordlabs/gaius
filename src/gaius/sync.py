@@ -12,9 +12,12 @@ class SyncError(RuntimeError):
 
 TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})"
 HANDOFF_SECTION = re.compile(
-    rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?)(?=^## |\Z)"
+    rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?)"
+    rf"(?=^## Session Handoff - {TIMESTAMP}|^## Current Status|\Z)"
 )
-DECISION_ENTRY = re.compile(rf"(?m)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - [^\n]*(?:\n|\Z))")
+DECISION_ENTRY = re.compile(
+    rf"(?ms)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - .*?)(?=^- {TIMESTAMP} - |\Z)"
+)
 STATE_PATH = re.compile(r"^projects/[^/]+/STATE\.md$")
 DECISIONS_PATH = re.compile(r"^projects/[^/]+/DECISIONS\.md$")
 
@@ -32,8 +35,7 @@ def split_timestamped_entries(text: str, pattern: re.Pattern[str]) -> tuple[dict
         except ValueError:
             return None
         section = match.group("section")
-        existing = entries.get(timestamp)
-        if existing is not None and existing != section:
+        if timestamp in entries:
             return None
         entries[timestamp] = section
     return entries, pattern.sub("", text)
@@ -41,6 +43,12 @@ def split_timestamped_entries(text: str, pattern: re.Pattern[str]) -> tuple[dict
 
 def preserves_base_entries(base_entries: dict[str, str], candidate_entries: dict[str, str]) -> bool:
     return all(candidate_entries.get(timestamp) == section for timestamp, section in base_entries.items())
+
+
+def has_colliding_additions(
+    base_entries: dict[str, str], our_entries: dict[str, str], their_entries: dict[str, str]
+) -> bool:
+    return bool((our_entries.keys() - base_entries.keys()) & (their_entries.keys() - base_entries.keys()))
 
 
 def merge_handoffs(base: str, ours: str, theirs: str) -> str | None:
@@ -55,6 +63,7 @@ def merge_handoffs(base: str, ours: str, theirs: str) -> str | None:
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
+        or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None
     entries = {**base_entries, **our_entries, **their_entries}
@@ -82,6 +91,7 @@ def merge_decisions(base: str, ours: str, theirs: str) -> str | None:
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
+        or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None
     entries = {**base_entries, **our_entries, **their_entries}
