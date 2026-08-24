@@ -147,6 +147,130 @@ def test_sync_happy_path_in_tmp_git_repo(tmp_path: Path):
     assert "test sync" in pushed
 
 
+def init_synced_store(store: Path, remote: Path) -> str:
+    assert run_cli(store, "init").exit_code == 0
+    subprocess.run(["git", "-C", str(store), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(store), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(store), "remote", "add", "origin", str(remote)], check=True)
+    result = run_cli(store, "handoff", "demo", "--message", "Initial handoff.")
+    assert result.exit_code == 0, result.output
+    result = run_cli(store, "sync")
+    assert result.exit_code == 0, result.output
+    return subprocess.run(
+        ["git", "-C", str(store), "branch", "--show-current"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def clone_store(remote: Path, branch: str, destination: Path) -> None:
+    subprocess.run(["git", "clone", "--branch", branch, str(remote), str(destination)], check=True)
+    subprocess.run(["git", "-C", str(destination), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(destination), "config", "user.name", "Test User"], check=True)
+
+
+def prepend_handoff(store: Path, timestamp: str, message: str) -> None:
+    state = store / "projects" / "demo" / "STATE.md"
+    existing = state.read_text()
+    first_line, rest = existing.split("\n", 1)
+    section = f"## Session Handoff - {timestamp}\n\n{message}\n\n"
+    state.write_text(f"{first_line}\n\n{section}{rest.lstrip()}")
+
+
+def append_decision(store: Path, timestamp: str, message: str) -> None:
+    decisions = store / "projects" / "demo" / "DECISIONS.md"
+    with decisions.open("a") as handle:
+        handle.write(f"- {timestamp} - {message}\n")
+
+
+def test_sync_merges_concurrent_timestamped_handoffs(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    prepend_handoff(primary, "2026-08-24T01:00:00+00:00", "Older local handoff.")
+    prepend_handoff(secondary, "2026-08-24T02:00:00+00:00", "Newer remote handoff.")
+
+    result = run_cli(secondary, "sync")
+    assert result.exit_code == 0, result.output
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    assert "Merged concurrent handoffs" in result.output
+
+    state = (primary / "projects" / "demo" / "STATE.md").read_text()
+    assert state.index("Newer remote handoff.") < state.index("Older local handoff.")
+
+
+def test_sync_merges_concurrent_timestamped_decisions(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    append_decision(primary, "2026-08-24T01:00:00+00:00", "Local decision.")
+    append_decision(secondary, "2026-08-24T02:00:00+00:00", "Remote decision.")
+
+    result = run_cli(secondary, "sync")
+    assert result.exit_code == 0, result.output
+    result = run_cli(primary, "sync")
+    assert result.exit_code == 0, result.output
+    assert "Merged concurrent decisions" in result.output
+
+    decisions = (primary / "projects" / "demo" / "DECISIONS.md").read_text()
+    assert decisions.index("Local decision.") < decisions.index("Remote decision.")
+
+
+def test_sync_leaves_non_handoff_state_edits_for_manual_resolution(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    for store, status in ((primary, "Local status."), (secondary, "Remote status.")):
+        state = store / "projects" / "demo" / "STATE.md"
+        state.write_text(state.read_text().replace("Not yet recorded.", status))
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "Git merge conflict during pull" in result.output
+
+
+def test_sync_refuses_retry_during_unresolved_merge(tmp_path: Path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    branch = init_synced_store(primary, remote)
+    clone_store(remote, branch, secondary)
+
+    for store, status in ((primary, "Local status."), (secondary, "Remote status.")):
+        state = store / "projects" / "demo" / "STATE.md"
+        state.write_text(state.read_text().replace("Not yet recorded.", status))
+
+    assert run_cli(secondary, "sync").exit_code == 0
+    assert run_cli(primary, "sync").exit_code != 0
+    result = run_cli(primary, "sync")
+    assert result.exit_code != 0
+    assert "unresolved Git operation" in result.output
+
+    conflicts = subprocess.run(
+        ["git", "-C", str(primary), "diff", "--name-only", "--diff-filter=U"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.splitlines()
+    assert conflicts == ["projects/demo/STATE.md"]
+
+
 def run_setup(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     repo = Path(__file__).resolve().parents[1]
     env = {**os.environ, "HOME": str(home), "PYTHON": sys.executable, "XDG_CONFIG_HOME": str(home / ".config")}
@@ -265,7 +389,7 @@ def test_stub_and_doctor_report_required_information(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "name: gaius" in result.output
     assert "Gaius writes are local until synced" in result.output
-    assert "If using MCP tools, call `sync` before shared reads" in result.output
+    assert "Every session MUST sync before its first shared read and immediately after every Gaius write" in result.output.replace("\n", " ")
     assert "Codex note: some Codex sessions expose MCP tools lazily" in result.output
     assert "list_projects read_doc task_status gaius" in result.output
 

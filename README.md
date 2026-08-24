@@ -228,23 +228,24 @@ session end) as a third, even-less-optional mechanism on tools that support them
 
 ### 6. Sync between machines
 
-`gaius sync` wraps pull → commit → push against whatever remote the store repo
-has. This is typically a bare repo on an always-on node reached over a tailnet,
-never a hosting service holding plaintext:
+`gaius sync` commits local writes, merges remote changes without rebasing, then
+pushes against whatever remote the store repo has. This is typically a bare repo on an
+always-on node reached over a tailnet, never a hosting service holding plaintext:
 
 ```bash
 git -C ~/memory remote add origin user@node:/srv/memory.git
 gaius sync
 ```
 
-On a merge conflict it stops loudly with instructions rather than leaving the
-repo mid-merge.
+Concurrent, complete timestamped handoffs and decision entries are merged automatically
+in chronological order. Any other conflict stops loudly with instructions rather than
+leaving the repo mid-merge.
 
-MCP-only agents should call the `sync` tool before reading shared memory and
-immediately after `add_memory`, `handoff`, `log_decision`, or a completed
-`run_task` whose result should be visible elsewhere. A successful MCP sync
-returns `ok: true`; `clean: true` means there are no remaining uncommitted
-memory changes.
+Every agent should sync before its first shared-memory read and immediately after every
+Gaius write. MCP-only agents call the `sync` tool after `add_memory`, `handoff`,
+`log_decision`, or a completed `run_task` whose result should be visible elsewhere. A
+successful MCP sync returns `ok: true`; `clean: true` means there are no remaining
+uncommitted memory changes.
 
 ### 7. Delegate tasks to an agent
 
