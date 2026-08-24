@@ -7,7 +7,7 @@ import click
 from .config import load_config
 from .doctor import doctor_report
 from .indexer import index_store, search
-from .store import DecisionError, add_memory, decide as decide_memory, handoff as handoff_memory
+from .store import DecisionError, HandoffError, add_memory, decide as decide_memory, handoff as handoff_memory
 from .store import init_store, list_projects, project_state, read_doc
 from .sync import SyncError, sync as sync_memory
 from .tasks import TaskError, list_tasks, run_task, task_status
@@ -89,7 +89,10 @@ def handoff(project: str, message: str | None, read_stdin: bool) -> None:
         summary = message
     else:
         raise click.UsageError("Provide --message or --stdin")
-    path = handoff_memory(load_config(), project, summary)
+    try:
+        path = handoff_memory(load_config(), project, summary)
+    except HandoffError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(path)
 
 

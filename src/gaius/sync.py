@@ -11,12 +11,14 @@ class SyncError(RuntimeError):
 
 
 TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})"
+HANDOFF_END_MARKER = "<!-- gaius-handoff-end -->"
+DECISION_END_MARKER = "<!-- gaius-decision-end -->"
 HANDOFF_SECTION = re.compile(
-    rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?)"
-    rf"(?=^## Session Handoff - {TIMESTAMP}|^## Current Status|\Z)"
+    rf"(?ms)^(?P<section>## Session Handoff - (?P<timestamp>{TIMESTAMP})\n\n.*?^{HANDOFF_END_MARKER}\n*)"
 )
-DECISION_ENTRY = re.compile(rf"(?m)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - [^\n]*(?:\n|\Z))")
-DECISIONS_REMAINDER = re.compile(r"^# [^\n]+\n*$")
+DECISION_ENTRY = re.compile(
+    rf"(?m)^(?P<section>- (?P<timestamp>{TIMESTAMP}) - [^\n]*\n{DECISION_END_MARKER}\n*)"
+)
 STATE_PATH = re.compile(r"^projects/[^/]+/STATE\.md$")
 DECISIONS_PATH = re.compile(r"^projects/[^/]+/DECISIONS\.md$")
 
@@ -90,7 +92,6 @@ def merge_decisions(base: str, ours: str, theirs: str) -> str | None:
         or remainder != their_remainder
         or not preserves_base_entries(base_entries, our_entries)
         or not preserves_base_entries(base_entries, their_entries)
-        or not DECISIONS_REMAINDER.fullmatch(remainder)
         or has_colliding_additions(base_entries, our_entries, their_entries)
     ):
         return None

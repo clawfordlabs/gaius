@@ -237,17 +237,18 @@ git -C ~/memory remote add origin user@node:/srv/memory.git
 gaius sync
 ```
 
-Concurrent, complete timestamped handoffs and decision entries are merged automatically
-in chronological order only when the file exists in the common Git base and both sides
-preserve every base entry unchanged. The semantic resolver rejects duplicate timestamps
-when resolving a Git conflict; clean Git merges bypass that resolver. Concurrent first
-creation of the same project and every other unsafe conflict stop loudly and intentionally
-remain in Git's protected merge state. Resolve and commit the files manually, or run `git
-merge --abort`; `gaius sync` refuses retries until the operation is complete.
+Concurrent, complete timestamped handoffs and decision entries written by Gaius are
+merged automatically in chronological order only when the file exists in the common Git
+base and both sides preserve every base entry unchanged. The semantic resolver rejects
+duplicate timestamps when resolving a Git conflict; clean Git merges bypass that resolver.
+Concurrent first creation of the same project and every other unsafe conflict stop loudly
+and intentionally remain in Git's protected merge state. Resolve and commit the files
+manually, or run `git merge --abort`; `gaius sync` refuses retries until the operation is
+complete.
 
-Handoff summaries may use level-two Markdown headings, except `## Current Status`.
-That heading begins the state-file tail and therefore leaves a concurrent merge for
-manual resolution; use another heading for a summary subsection.
+Handoff summaries may use any Markdown heading. Gaius uses
+`<!-- gaius-handoff-end -->` as an internal record boundary; a summary cannot contain
+that marker.
 
 Every agent should sync before its first shared-memory read and immediately after every
 Gaius write. MCP-only agents call the `sync` tool after `add_memory`, `handoff`,
