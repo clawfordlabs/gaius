@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,10 @@ from pypdf.generic import DictionaryObject, NameObject, StreamObject
 class CliResult:
     exit_code: int
     output: str
+
+def assert_utc_timestamp(value: str) -> None:
+    assert datetime.fromisoformat(value.replace("Z", "+00:00")).utcoffset() == timedelta(0)
+
 
 
 def run_cli(memory_dir: Path, *args: str):
@@ -167,8 +172,8 @@ def test_sync_uses_neutral_utc_commit_metadata(tmp_path: Path):
     author_name, author_email, author_time, committer_name, committer_email, committer_time = result.stdout.strip().split("\x00")
     assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
     assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
-    assert author_time.endswith(("Z", "+00:00"))
-    assert committer_time.endswith(("Z", "+00:00"))
+    assert_utc_timestamp(author_time)
+    assert_utc_timestamp(committer_time)
 
 
 def test_sync_uses_neutral_utc_merge_metadata(tmp_path: Path):
@@ -203,8 +208,8 @@ def test_sync_uses_neutral_utc_merge_metadata(tmp_path: Path):
     assert subject.startswith("Merge ")
     assert (author_name, author_email) == ("Gaius", "gaius@local.invalid")
     assert (committer_name, committer_email) == ("Gaius", "gaius@local.invalid")
-    assert author_time.endswith(("Z", "+00:00"))
-    assert committer_time.endswith(("Z", "+00:00"))
+    assert_utc_timestamp(author_time)
+    assert_utc_timestamp(committer_time)
 
 
 def run_setup(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
