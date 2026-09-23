@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "click>=8.1",
-  "mcp>=1.0",
+  "mcp>=1.0,<2",
   "pypdf>=4.0",
   "sqlite-vec>=0.1.0",
 ]
